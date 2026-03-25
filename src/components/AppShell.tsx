@@ -13,6 +13,7 @@ import { DealsList } from "@/components/screens/DealsList";
 import { PipelineList } from "@/components/screens/PipelineList";
 import { PipelineDetail } from "@/components/screens/PipelineDetail";
 import { AddPipelineDeal } from "@/components/screens/AddPipelineDeal";
+import { Analytics } from "@/components/screens/Analytics";
 import * as data from "@/lib/data";
 import type { Deal, Expense, PipelineDeal } from "@/lib/types";
 
@@ -26,7 +27,8 @@ export type Screen =
   | "deals"
   | "pipeline"
   | "pipeline-detail"
-  | "add-pipeline";
+  | "add-pipeline"
+  | "analytics";
 
 export interface ScreenParams {
   dealId?: string;
@@ -201,6 +203,9 @@ export default function AppShell() {
           actions={actions}
           userEmail={user.email || ""}
         />
+      )}
+      {screen === "analytics" && (
+        <Analytics deals={deals} expenses={expenses} actions={actions} />
       )}
 
       <BottomNav activeTab={screen} onNavigate={(tab) => navigate(tab as Screen)} />

@@ -133,9 +133,9 @@ const navItems = [
     icon: "M8 6h13 M8 12h13 M8 18h13 M3 6h.01 M3 12h.01 M3 18h.01",
   },
   {
-    id: "expenses",
-    label: "Export",
-    icon: "M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4 M7 10l5 5 5-5 M12 15V3",
+    id: "analytics",
+    label: "Analytics",
+    icon: "M18 20V10 M12 20V4 M6 20v-6",
   },
 ];
 
