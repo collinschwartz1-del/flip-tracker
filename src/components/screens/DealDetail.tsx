@@ -3,8 +3,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { StatusBadge, SvgIcon } from "@/components/ui";
 import { fmt, pct, shortAddr, budgetColor, budgetBarColor, calcDealFinancials } from "@/lib/utils";
-import { EXPENSE_CATEGORIES, type Deal, type Expense, type DealNote } from "@/lib/types";
+import { EXPENSE_CATEGORIES, type Deal, type Expense, type DealNote, type DealPhoto, type PhotoType } from "@/lib/types";
 import * as data from "@/lib/data";
+import { PhotoGallery } from "@/components/PhotoGallery";
 import type { AppActions } from "@/components/AppShell";
 
 export function DealDetail({
@@ -24,12 +25,18 @@ export function DealDetail({
   const [notes, setNotes] = useState<DealNote[]>([]);
   const [newNote, setNewNote] = useState("");
   const [loadingNotes, setLoadingNotes] = useState(true);
+  const [photos, setPhotos] = useState<DealPhoto[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   const loadNotes = useCallback(async () => {
     if (!dealId) return;
     try {
-      const n = await data.getNotes(dealId);
+      const [n, p] = await Promise.all([
+        data.getNotes(dealId),
+        data.getDealPhotos(dealId),
+      ]);
       setNotes(n);
+      setPhotos(p);
     } catch (e) {
       console.error(e);
     }
@@ -39,6 +46,29 @@ export function DealDetail({
   useEffect(() => {
     loadNotes();
   }, [loadNotes]);
+
+  const handleUploadPhoto = async (file: File, type: PhotoType) => {
+    setUploading(true);
+    try {
+      await data.uploadDealPhoto(dealId, file, type, userEmail);
+      const updated = await data.getDealPhotos(dealId);
+      setPhotos(updated);
+      actions.toast("Photo uploaded!");
+    } catch (err: any) {
+      actions.toast("Upload failed: " + err.message, "error");
+    }
+    setUploading(false);
+  };
+
+  const handleDeletePhoto = async (photo: DealPhoto) => {
+    try {
+      await data.deleteDealPhoto(photo);
+      setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+      actions.toast("Photo deleted");
+    } catch (err: any) {
+      actions.toast("Delete failed: " + err.message, "error");
+    }
+  };
 
   if (!deal) {
     return (
@@ -77,7 +107,7 @@ export function DealDetail({
         <div className="flex-1 min-w-0">
           <p className="text-base font-bold text-zinc-100 truncate">{shortAddr(deal.address)}</p>
           <p className="text-xs text-zinc-500">
-            {deal.beds}bd / {deal.baths}ba / {deal.sqft?.toLocaleString()}sf · Built {deal.year_built}
+            {deal.beds}bd / {deal.baths}ba / {deal.sqft?.toLocaleString()}sf &middot; Built {deal.year_built}
           </p>
         </div>
         <button
@@ -104,10 +134,7 @@ export function DealDetail({
           <Row label="Rehab Budget" value={fmt(deal.rehab_budget)} />
           <Row label="Rehab Spent" value={fmt(fin.rehabSpent)} valueClass={budgetColor(fin.budgetUsed)} labelClass={budgetColor(fin.budgetUsed)} />
           <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full ${budgetBarColor(fin.budgetUsed)}`}
-              style={{ width: `${Math.min(100, fin.budgetUsed * 100)}%` }}
-            />
+            <div className={`h-full rounded-full ${budgetBarColor(fin.budgetUsed)}`} style={{ width: `${Math.min(100, fin.budgetUsed * 100)}%` }} />
           </div>
           <Row label="Holding Costs" value={fmt(fin.holdingSpent)} />
           <Row label="Selling Costs (8%)" value={fmt(fin.sellingCosts)} />
@@ -131,8 +158,20 @@ export function DealDetail({
           onClick={() => actions.navigate("add-expense", { dealId: deal.id })}
           className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold rounded-xl text-sm transition-colors flex items-center justify-center gap-2 active:scale-[0.98]"
         >
-          <SvgIcon d="M12 5v14 M5 12h14" size={18} className="text-zinc-950" /> Add Expense
+          <SvgIcon d="M12 5v14 M5 12h14" size={18} className="text-zinc-950" />
+          Add Expense
         </button>
+      </div>
+
+      {/* Photo Gallery */}
+      <div className="px-4 mb-4">
+        <PhotoGallery
+          dealId={dealId}
+          photos={photos}
+          onUpload={handleUploadPhoto}
+          onDelete={handleDeletePhoto}
+          uploading={uploading}
+        />
       </div>
 
       {/* Recent Expenses */}
@@ -141,7 +180,7 @@ export function DealDetail({
           <h3 className="text-sm font-semibold text-zinc-300">Recent Expenses</h3>
           {dealExpenses.length > 5 && (
             <button onClick={() => actions.navigate("expenses", { filterDeal: deal.id })} className="text-xs text-amber-400">
-              See all →
+              See all &rarr;
             </button>
           )}
         </div>
@@ -152,7 +191,7 @@ export function DealDetail({
             {dealExpenses.slice(0, 5).map((exp) => (
               <div key={exp.id} className="flex items-center justify-between py-2 px-3 bg-zinc-900/50 rounded-lg border border-zinc-800/50">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <span className="text-sm">{EXPENSE_CATEGORIES.find((c) => c.value === exp.category)?.icon || "📦"}</span>
+                  <span className="text-sm">{EXPENSE_CATEGORIES.find((c) => c.value === exp.category)?.icon || "\u{1f4e6}"}</span>
                   <div className="min-w-0">
                     <p className="text-xs font-medium text-zinc-300 truncate">
                       {exp.vendor || EXPENSE_CATEGORIES.find((c) => c.value === exp.category)?.label}
@@ -187,7 +226,7 @@ export function DealDetail({
             <div key={n.id} className="p-3 bg-zinc-900/50 border border-zinc-800/50 rounded-xl">
               <p className="text-xs text-zinc-300">{n.content}</p>
               <p className="text-[10px] text-zinc-600 mt-1">
-                {n.author?.split("@")[0]} · {new Date(n.created_at).toLocaleString()}
+                {n.author?.split("@")[0]} &middot; {new Date(n.created_at).toLocaleString()}
               </p>
             </div>
           ))}
