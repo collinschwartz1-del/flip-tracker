@@ -70,6 +70,7 @@ export function PipelineDetail({
   const [analysis, setAnalysis] = useState<AIAnalysis | null>(null);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [listingUrl, setListingUrl] = useState(deal.listing_url || "");
   const [loadingAnalysis, setLoadingAnalysis] = useState(true);
   const [offerAmount, setOfferAmount] = useState("");
   const [passReason, setPassReason] = useState("");
@@ -120,11 +121,15 @@ export function PipelineDetail({
 
   const status = PIPELINE_STATUS_CONFIG[deal.status];
   const fmt = (n: number | null | undefined) =>
-    n != null ? `$${Math.round(n).toLocaleString()}` : "—";
+    n != null ? `$${Math.round(n).toLocaleString()}` : "â";
 
   const runAnalysis = async () => {
     setAnalyzing(true);
     try {
+      // Save listing URL if provided
+      if (listingUrl.trim()) {
+        await data.updatePipelineDeal(dealId, { listing_url: listingUrl.trim() });
+      }
       // Update status to analyzing
       await data.updatePipelineDeal(dealId, { status: "analyzing" });
 
@@ -132,7 +137,7 @@ export function PipelineDetail({
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, listing_url: listingUrl.trim() || undefined }),
       });
 
       if (!response.ok) {
@@ -265,13 +270,13 @@ export function PipelineDetail({
           onClick={() => actions.navigate("pipeline" as any)}
           className="text-xs text-zinc-500 mb-2 flex items-center gap-1"
         >
-          ← Pipeline
+          â Pipeline
         </button>
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <h1 className="text-lg font-bold text-zinc-100">{deal.address}</h1>
             <p className="text-xs text-zinc-500 mt-0.5">
-              Ask: {fmt(deal.asking_price)} · Source: {deal.source || "—"}
+              Ask: {fmt(deal.asking_price)} Â· Source: {deal.source || "â"}
             </p>
           </div>
           <span
@@ -332,6 +337,25 @@ export function PipelineDetail({
           </div>
         )}
 
+        {/* Listing URL input */}
+        <div className="px-4 mb-2">
+          <label className="block text-xs text-zinc-500 mb-1">
+            Zillow / Redfin Link{" "}
+            <span className="text-zinc-700">(optional — improves analysis accuracy)</span>
+          </label>
+          <input
+            value={listingUrl}
+            onChange={(e) => setListingUrl(e.target.value)}
+            placeholder="https://www.zillow.com/homedetails/..."
+            className="w-full py-2.5 px-3 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-amber-500/50"
+          />
+          {listingUrl && (
+            <p className="text-[10px] text-emerald-500 mt-1">
+              \u2713 Listing data will be included in AI analysis
+            </p>
+          )}
+        </div>
+
         {/* AI Analysis button */}
         <button
           onClick={runAnalysis}
@@ -380,7 +404,7 @@ export function PipelineDetail({
                 <div className="text-sm font-bold text-zinc-100">
                   {analysisResult.base_case_roi != null
                     ? `${Math.round(analysisResult.base_case_roi)}%`
-                    : "—"}
+                    : "â"}
                 </div>
               </div>
               <div className="bg-zinc-900/60 rounded-lg p-3">
@@ -422,7 +446,7 @@ export function PipelineDetail({
                           {["light", "moderate", "heavy"].map((rehab) => {
                             const key = `${scenario}_${rehab}`;
                             const cell = analysisResult.profit_matrix[key];
-                            if (!cell) return <td key={key} className="p-1.5">—</td>;
+                            if (!cell) return <td key={key} className="p-1.5">â</td>;
                             return (
                               <td
                                 key={key}
@@ -519,7 +543,7 @@ export function PipelineDetail({
                       MAX HOLD MONTHS
                     </div>
                     <div className="text-sm font-bold text-red-300">
-                      {analysisResult.kill_zones.max_hold_months || "—"}
+                      {analysisResult.kill_zones.max_hold_months || "â"}
                     </div>
                   </div>
                 </div>
@@ -534,7 +558,7 @@ export function PipelineDetail({
                 </h3>
                 <ul className="text-xs text-zinc-400 space-y-0.5">
                   {analysisResult.conditions.map((c: string, i: number) => (
-                    <li key={i}>• {c}</li>
+                    <li key={i}>â¢ {c}</li>
                   ))}
                 </ul>
               </div>
@@ -546,7 +570,7 @@ export function PipelineDetail({
                 </h3>
                 <ul className="text-xs text-amber-400/70 space-y-0.5">
                   {analysisResult.missing_data.map((m: string, i: number) => (
-                    <li key={i}>⚠ {m}</li>
+                    <li key={i}>â  {m}</li>
                   ))}
                 </ul>
               </div>
@@ -640,7 +664,7 @@ export function PipelineDetail({
             onClick={promoteDeal}
             className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold text-sm"
           >
-            Won — Promote to Active Flips
+            Won â Promote to Active Flips
           </button>
         )}
 
@@ -671,7 +695,7 @@ export function PipelineDetail({
               >
                 <p className="text-xs text-zinc-300">{note.content}</p>
                 <p className="text-[10px] text-zinc-600 mt-1">
-                  {note.author} ·{" "}
+                  {note.author} Â·{" "}
                   {new Date(note.created_at).toLocaleDateString()}
                 </p>
               </div>
