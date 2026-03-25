@@ -201,6 +201,7 @@ export interface PipelineDeal {
   offer_date: string | null;
   decision_reason: string;
   promoted_deal_id: string | null;
+  listing_url: string;
   notes: string;
   added_by: string;
 }
