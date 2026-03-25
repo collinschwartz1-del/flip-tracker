@@ -68,6 +68,24 @@ export interface DealNote {
 }
 
 // ============================================================
+// DEAL PHOTOS (Phase 2.2)
+// ============================================================
+
+export type PhotoType = "before" | "after";
+
+export interface DealPhoto {
+  id: string;
+  created_at: string;
+  deal_id: string;
+  storage_path: string;
+  public_url: string;
+  photo_type: PhotoType;
+  caption: string;
+  uploaded_by: string;
+  original_name: string;
+}
+
+// ============================================================
 // CALCULATED FINANCIALS
 // ============================================================
 
@@ -131,15 +149,15 @@ export const EXPENSE_CATEGORIES: {
   label: string;
   icon: string;
 }[] = [
-  { value: "materials", label: "Materials", icon: "🪵" },
-  { value: "labor", label: "Labor", icon: "🔨" },
-  { value: "permits", label: "Permits", icon: "📋" },
-  { value: "utilities", label: "Utilities", icon: "💡" },
-  { value: "insurance", label: "Insurance", icon: "🛡" },
-  { value: "taxes", label: "Taxes", icon: "🏛" },
-  { value: "loan_payments", label: "Loan Payments", icon: "🏦" },
-  { value: "closing_costs", label: "Closing Costs", icon: "📝" },
-  { value: "other", label: "Other", icon: "📦" },
+  { value: "materials", label: "Materials", icon: "\u{1fab5}" },
+  { value: "labor", label: "Labor", icon: "\u{1f528}" },
+  { value: "permits", label: "Permits", icon: "\u{1f4cb}" },
+  { value: "utilities", label: "Utilities", icon: "\u{1f4a1}" },
+  { value: "insurance", label: "Insurance", icon: "\u{1f6e1}" },
+  { value: "taxes", label: "Taxes", icon: "\u{1f4c4}" },
+  { value: "loan_payments", label: "Loan Payments", icon: "\u{1f3e6}" },
+  { value: "closing_costs", label: "Closing Costs", icon: "\u{1f4dd}" },
+  { value: "other", label: "Other", icon: "\u{1f4e6}" },
 ];
 
 export const HOLDING_CATEGORIES: ExpenseCategory[] = [
