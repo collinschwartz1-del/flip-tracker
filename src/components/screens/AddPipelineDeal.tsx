@@ -14,6 +14,7 @@ export function AddPipelineDeal({
   const [askingPrice, setAskingPrice] = useState("");
   const [source, setSource] = useState("");
   const [sourceContact, setSourceContact] = useState("");
+  const [listingUrl, setListingUrl] = useState("");
   const [beds, setBeds] = useState("");
   const [baths, setBaths] = useState("");
   const [sqft, setSqft] = useState("");
@@ -153,6 +154,7 @@ export function AddPipelineDeal({
         offer_date: null,
         decision_reason: "",
         promoted_deal_id: null,
+        listing_url: listingUrl.trim(),
         notes: notes.trim(),
         added_by: userEmail,
       });
@@ -299,6 +301,20 @@ export function AddPipelineDeal({
                 className="w-full px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-100 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-amber-500/50"
               />
             </div>
+
+              {/* Listing URL */}
+              <div>
+                <label className="text-xs font-medium text-zinc-400 mb-1">
+                  Zillow / Redfin Link
+                </label>
+                <input
+                  type="text"
+                  value={listingUrl}
+                  onChange={(e) => setListingUrl(e.target.value)}
+                  placeholder="https://www.zillow.com/homedetails/..."
+                  className="w-full px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-200 text-sm placeholder-zinc-600 focus:outline-none focus:border-amber-500/50"
+                />
+              </div>
           </div>
 
           {/* Property details */}
