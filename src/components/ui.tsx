@@ -113,12 +113,17 @@ export function StatusBadge({
 const navItems = [
   {
     id: "dashboard",
-    label: "Dashboard",
+    label: "Flips",
     icon: "M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z M9 22V12h6v10",
   },
   {
+    id: "pipeline",
+    label: "Pipeline",
+    icon: "M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z M12 8v8 M8 12h8",
+  },
+  {
     id: "add-expense",
-    label: "Add Expense",
+    label: "Expense",
     icon: "M12 5v14 M5 12h14",
     accent: true,
   },
@@ -147,7 +152,9 @@ export function BottomNav({
         {navItems.map((tab) => {
           const active =
             activeTab === tab.id ||
-            (tab.id === "deals" && activeTab === "add-deal");
+            (tab.id === "deals" && activeTab === "add-deal") ||
+            (tab.id === "pipeline" &&
+              (activeTab === "pipeline-detail" || activeTab === "add-pipeline"));
           return (
             <button
               key={tab.id}

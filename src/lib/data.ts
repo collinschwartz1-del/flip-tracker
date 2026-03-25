@@ -1,5 +1,5 @@
 import { createClient } from "./supabase";
-import type { Deal, Expense, DealNote } from "./types";
+import type { Deal, Expense, DealNote, PipelineDeal, AIAnalysis } from "./types";
 
 const supabase = createClient();
 
@@ -166,4 +166,152 @@ export async function createNote(
     .single();
   if (error) throw error;
   return data;
+}
+
+// ============================================================
+// PIPELINE DEALS
+// ============================================================
+
+export async function getPipelineDeals(): Promise<PipelineDeal[]> {
+  const { data, error } = await supabase
+    .from("pipeline_deals")
+    .select("*")
+    .order("updated_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function createPipelineDeal(
+  deal: Omit<PipelineDeal, "id" | "created_at" | "updated_at" | "status_changed_at">
+): Promise<PipelineDeal> {
+  const { data, error } = await supabase
+    .from("pipeline_deals")
+    .insert(deal)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updatePipelineDeal(
+  id: string,
+  updates: Partial<PipelineDeal>
+): Promise<PipelineDeal> {
+  const { data, error } = await supabase
+    .from("pipeline_deals")
+    .update(updates)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deletePipelineDeal(id: string): Promise<void> {
+  await supabase.from("ai_analyses").delete().eq("pipeline_deal_id", id);
+  await supabase.from("pipeline_notes").delete().eq("pipeline_deal_id", id);
+  const { error } = await supabase.from("pipeline_deals").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ============================================================
+// AI ANALYSES
+// ============================================================
+
+export async function getLatestAnalysis(
+  pipelineDealId: string
+): Promise<AIAnalysis | null> {
+  const { data, error } = await supabase
+    .from("ai_analyses")
+    .select("*")
+    .eq("pipeline_deal_id", pipelineDealId)
+    .eq("status", "completed")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .single();
+  if (error && error.code !== "PGRST116") throw error;
+  return data || null;
+}
+
+export async function createAnalysis(
+  analysis: Omit<AIAnalysis, "id" | "created_at">
+): Promise<AIAnalysis> {
+  const { data, error } = await supabase
+    .from("ai_analyses")
+    .insert(analysis)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// ============================================================
+// PIPELINE NOTES
+// ============================================================
+
+export async function getPipelineNotes(pipelineDealId: string) {
+  const { data, error } = await supabase
+    .from("pipeline_notes")
+    .select("*")
+    .eq("pipeline_deal_id", pipelineDealId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function createPipelineNote(note: {
+  pipeline_deal_id: string;
+  content: string;
+  author: string;
+}) {
+  const { data, error } = await supabase
+    .from("pipeline_notes")
+    .insert(note)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// ============================================================
+// PROMOTE PIPELINE DEAL TO ACTIVE DEAL
+// ============================================================
+
+export async function promotePipelineDeal(
+  pipelineDealId: string
+): Promise<Deal> {
+  const pd = await supabase
+    .from("pipeline_deals")
+    .select("*")
+    .eq("id", pipelineDealId)
+    .single();
+  if (pd.error) throw pd.error;
+  const deal = pd.data;
+
+  const newDeal = await createDeal({
+    address: deal.address,
+    beds: deal.beds,
+    baths: deal.baths,
+    sqft: deal.sqft,
+    year_built: deal.year_built,
+    purchase_price: deal.offer_amount || deal.asking_price,
+    purchase_date: new Date().toISOString().split("T")[0],
+    rehab_budget: deal.estimated_rehab || 0,
+    estimated_arv: deal.estimated_arv || 0,
+    status: "under_contract",
+    monthly_holding_cost: 1500,
+    financing_notes: "",
+    notes: `Promoted from pipeline. Source: ${deal.source}`,
+    sale_price: null,
+    sale_date: null,
+    actual_closing_costs: null,
+  });
+
+  await updatePipelineDeal(pipelineDealId, {
+    status: "won",
+    promoted_deal_id: newDeal.id,
+    decision_reason: "Won — promoted to active deals",
+  });
+
+  return newDeal;
 }

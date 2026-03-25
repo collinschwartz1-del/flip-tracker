@@ -148,3 +148,71 @@ export const HOLDING_CATEGORIES: ExpenseCategory[] = [
   "taxes",
   "utilities",
 ];
+
+// ============================================================
+// PIPELINE TYPES (Phase 2)
+// ============================================================
+
+export type PipelineStatus =
+  | "new"
+  | "analyzing"
+  | "offer_made"
+  | "won"
+  | "passed"
+  | "dead";
+
+export interface PipelineDeal {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  address: string;
+  asking_price: number;
+  source: string;
+  source_contact: string;
+  beds: number | null;
+  baths: number | null;
+  sqft: number | null;
+  year_built: number | null;
+  lot_size: string | null;
+  estimated_arv: number | null;
+  estimated_rehab: number | null;
+  estimated_profit: number | null;
+  status: PipelineStatus;
+  status_changed_at: string;
+  offer_amount: number | null;
+  offer_date: string | null;
+  decision_reason: string;
+  promoted_deal_id: string | null;
+  notes: string;
+  added_by: string;
+}
+
+export interface AIAnalysis {
+  id: string;
+  created_at: string;
+  pipeline_deal_id: string;
+  input_data: Record<string, any>;
+  analysis_result: Record<string, any>;
+  verdict: string;
+  base_case_profit: number | null;
+  base_case_roi: number | null;
+  max_purchase_price: number | null;
+  arv_validated: number | null;
+  rehab_moderate: number | null;
+  risk_level: string;
+  status: string;
+  error_message: string | null;
+  triggered_by: string;
+}
+
+export const PIPELINE_STATUS_CONFIG: Record<
+  PipelineStatus,
+  { label: string; color: string; order: number }
+> = {
+  new: { label: "New", color: "bg-blue-500", order: 0 },
+  analyzing: { label: "Analyzing", color: "bg-amber-500", order: 1 },
+  offer_made: { label: "Offer Made", color: "bg-purple-500", order: 2 },
+  won: { label: "Won", color: "bg-emerald-500", order: 3 },
+  passed: { label: "Passed", color: "bg-zinc-500", order: 4 },
+  dead: { label: "Dead", color: "bg-red-500", order: 5 },
+};

@@ -10,8 +10,11 @@ import { DealForm } from "@/components/screens/DealForm";
 import { AddExpense } from "@/components/screens/AddExpense";
 import { ExpensesList } from "@/components/screens/ExpensesList";
 import { DealsList } from "@/components/screens/DealsList";
+import { PipelineList } from "@/components/screens/PipelineList";
+import { PipelineDetail } from "@/components/screens/PipelineDetail";
+import { AddPipelineDeal } from "@/components/screens/AddPipelineDeal";
 import * as data from "@/lib/data";
-import type { Deal, Expense } from "@/lib/types";
+import type { Deal, Expense, PipelineDeal } from "@/lib/types";
 
 export type Screen =
   | "dashboard"
@@ -20,7 +23,10 @@ export type Screen =
   | "edit-deal"
   | "add-expense"
   | "expenses"
-  | "deals";
+  | "deals"
+  | "pipeline"
+  | "pipeline-detail"
+  | "add-pipeline";
 
 export interface ScreenParams {
   dealId?: string;
@@ -46,6 +52,7 @@ export default function AppShell() {
   const [params, setParams] = useState<ScreenParams>({});
   const [deals, setDeals] = useState<Deal[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [pipelineDeals, setPipelineDeals] = useState<PipelineDeal[]>([]);
   const [loading, setLoading] = useState(true);
   const [toastState, setToastState] = useState<{
     msg: string;
@@ -67,9 +74,14 @@ export default function AppShell() {
 
   const refreshData = useCallback(async () => {
     try {
-      const [d, e] = await Promise.all([data.getDeals(), data.getExpenses()]);
+      const [d, e, p] = await Promise.all([
+        data.getDeals(),
+        data.getExpenses(),
+        data.getPipelineDeals(),
+      ]);
       setDeals(d);
       setExpenses(e);
+      setPipelineDeals(p);
     } catch (err) {
       console.error("Failed to load data:", err);
     }
@@ -172,6 +184,23 @@ export default function AppShell() {
       )}
       {screen === "deals" && (
         <DealsList deals={deals} actions={actions} />
+      )}
+      {screen === "pipeline" && (
+        <PipelineList deals={pipelineDeals} actions={actions} />
+      )}
+      {screen === "pipeline-detail" && (
+        <PipelineDetail
+          dealId={params.dealId || ""}
+          pipelineDeals={pipelineDeals}
+          actions={actions}
+          userEmail={user.email || ""}
+        />
+      )}
+      {screen === "add-pipeline" && (
+        <AddPipelineDeal
+          actions={actions}
+          userEmail={user.email || ""}
+        />
       )}
 
       <BottomNav activeTab={screen} onNavigate={(tab) => navigate(tab as Screen)} />
