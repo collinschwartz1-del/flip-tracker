@@ -155,6 +155,9 @@ export function AddPipelineDeal({
         decision_reason: "",
         promoted_deal_id: null,
         listing_url: listingUrl.trim(),
+        cma_comps: [],
+        cma_pdf_name: "",
+        cma_uploaded_at: null,
         notes: notes.trim(),
         added_by: userEmail,
       });

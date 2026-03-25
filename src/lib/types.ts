@@ -168,6 +168,33 @@ export const HOLDING_CATEGORIES: ExpenseCategory[] = [
 ];
 
 // ============================================================
+// MLS COMP DATA (Phase 2.5)
+// ============================================================
+
+export interface MLSComp {
+  address: string;
+  sale_price: number | null;
+  list_price: number | null;
+  sqft: number | null;
+  price_per_sf: number | null;
+  beds: number | null;
+  baths: number | null;
+  year_built: number | null;
+  sale_date: string | null;
+  list_date: string | null;
+  dom: number | null;
+  lot_size: string | null;
+  condition: string | null;
+  status: string | null;
+  garage: string | null;
+  basement: string | null;
+  style: string | null;
+  distance: string | null;
+  mls_number: string | null;
+  notes: string | null;
+}
+
+// ============================================================
 // PIPELINE TYPES (Phase 2)
 // ============================================================
 
@@ -202,6 +229,9 @@ export interface PipelineDeal {
   decision_reason: string;
   promoted_deal_id: string | null;
   listing_url: string;
+  cma_comps: MLSComp[];
+  cma_pdf_name: string;
+  cma_uploaded_at: string | null;
   notes: string;
   added_by: string;
 }

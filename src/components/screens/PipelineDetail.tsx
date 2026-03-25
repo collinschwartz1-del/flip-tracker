@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import type { PipelineDeal, AIAnalysis } from "@/lib/types";
+import type { PipelineDeal, AIAnalysis, MLSComp } from "@/lib/types";
 import { PIPELINE_STATUS_CONFIG } from "@/lib/types";
 import type { AppActions, ScreenParams } from "@/components/AppShell";
 import { Spinner } from "@/components/ui";
+import { CMAUpload } from "@/components/CMAUpload";
 import * as data from "@/lib/data";
 
 function buildAnalysisPrompt(deal: PipelineDeal): string {
@@ -133,7 +134,36 @@ export function PipelineDetail({
       // Update status to analyzing
       await data.updatePipelineDeal(dealId, { status: "analyzing" });
 
-      const prompt = buildAnalysisPrompt(deal);
+      let prompt = buildAnalysisPrompt(deal);
+
+      // Append MLS comp context if CMA data is available
+      if (deal.cma_comps && deal.cma_comps.length > 0) {
+        const soldComps = deal.cma_comps.filter(
+          (c) => c.status?.toLowerCase() === "sold" || c.sale_price
+        );
+        const activeComps = deal.cma_comps.filter(
+          (c) => c.status?.toLowerCase() === "active"
+        );
+
+        prompt += `\n\nMLS COMP DATA (${deal.cma_comps.length} comps from CMA report):\n`;
+
+        if (soldComps.length > 0) {
+          prompt += `\nSOLD COMPS:\n`;
+          soldComps.forEach((c, i) => {
+            prompt += `${i + 1}. ${c.address} — Sold: $${c.sale_price?.toLocaleString() || "?"} | ${c.sqft?.toLocaleString() || "?"}sf ($${c.price_per_sf?.toFixed(0) || "?"}/sf) | ${c.beds || "?"}bd/${c.baths || "?"}ba | Built ${c.year_built || "?"} | ${c.dom || "?"} DOM | ${c.condition || "No condition noted"}\n`;
+          });
+        }
+
+        if (activeComps.length > 0) {
+          prompt += `\nACTIVE LISTINGS (competition):\n`;
+          activeComps.forEach((c, i) => {
+            prompt += `${i + 1}. ${c.address} — List: $${c.list_price?.toLocaleString() || "?"} | ${c.sqft?.toLocaleString() || "?"}sf | ${c.beds || "?"}bd/${c.baths || "?"}ba | ${c.dom || "?"} DOM\n`;
+          });
+        }
+
+        prompt += `\nUse this MLS comp data to validate your ARV estimate. Weight recent sold comps by similarity (sqft, beds/baths, condition, proximity). Flag if your ARV diverges significantly from comp data.`;
+      }
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -354,6 +384,24 @@ export function PipelineDetail({
               \u2713 Listing data will be included in AI analysis
             </p>
           )}
+        </div>
+
+        {/* CMA Comp Upload */}
+        <div className="px-4 mb-3">
+          <CMAUpload
+            comps={deal?.cma_comps || []}
+            pdfName={deal?.cma_pdf_name || ""}
+            uploadedAt={deal?.cma_uploaded_at ?? null}
+            onUpload={async (comps: MLSComp[], fileName: string) => {
+              await data.updatePipelineDeal(dealId, {
+                cma_comps: comps,
+                cma_pdf_name: fileName,
+                cma_uploaded_at: new Date().toISOString(),
+              });
+              await actions.refreshData();
+              actions.toast(`${comps.length} comps extracted from CMA`);
+            }}
+          />
         </div>
 
         {/* AI Analysis button */}
