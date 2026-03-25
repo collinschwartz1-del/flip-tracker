@@ -1,5 +1,6 @@
 import { createClient } from "./supabase";
-import type { Deal, Expense, DealNote, PipelineDeal, AIAnalysis } from "./types";
+import type { Deal, Expense, DealNote, DealPhoto, PipelineDeal, AIAnalysis } from "./types";
+import { v4 as uuidv4 } from "uuid";
 
 const supabase = createClient();
 
@@ -169,6 +170,80 @@ export async function createNote(
 }
 
 // ============================================================
+// DEAL PHOTOS (Phase 2.2)
+// ============================================================
+
+export async function getDealPhotos(dealId: string): Promise<DealPhoto[]> {
+  const { data, error } = await supabase
+    .from("deal_photos")
+    .select("*")
+    .eq("deal_id", dealId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function uploadDealPhoto(
+  dealId: string,
+  file: File,
+  photoType: "before" | "after",
+  uploadedBy: string,
+  caption?: string
+): Promise<DealPhoto> {
+  // Generate unique filename
+  const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+  const fileName = `${uuidv4()}.${ext}`;
+  const storagePath = `${dealId}/${fileName}`;
+
+  // Upload to Supabase Storage
+  const { data: uploadData, error: uploadError } = await supabase.storage
+    .from("deal-photos")
+    .upload(storagePath, file, {
+      contentType: file.type || "image/jpeg",
+      upsert: false,
+    });
+
+  if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`);
+
+  // Get the public URL
+  const { data: urlData } = supabase.storage
+    .from("deal-photos")
+    .getPublicUrl(storagePath);
+
+  const publicUrl = urlData.publicUrl;
+
+  // Create database record
+  const { data, error } = await supabase
+    .from("deal_photos")
+    .insert({
+      deal_id: dealId,
+      storage_path: storagePath,
+      public_url: publicUrl,
+      photo_type: photoType,
+      caption: caption || "",
+      uploaded_by: uploadedBy,
+      original_name: file.name,
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteDealPhoto(photo: DealPhoto): Promise<void> {
+  // Delete from storage
+  await supabase.storage.from("deal-photos").remove([photo.storage_path]);
+
+  // Delete database record
+  const { error } = await supabase
+    .from("deal_photos")
+    .delete()
+    .eq("id", photo.id);
+  if (error) throw error;
+}
+
+// ============================================================
 // PIPELINE DEALS
 // ============================================================
 
@@ -285,6 +360,7 @@ export async function promotePipelineDeal(
     .select("*")
     .eq("id", pipelineDealId)
     .single();
+
   if (pd.error) throw pd.error;
   const deal = pd.data;
 
@@ -310,7 +386,7 @@ export async function promotePipelineDeal(
   await updatePipelineDeal(pipelineDealId, {
     status: "won",
     promoted_deal_id: newDeal.id,
-    decision_reason: "Won — promoted to active deals",
+    decision_reason: "Won \u2014 promoted to active deals",
   });
 
   return newDeal;
