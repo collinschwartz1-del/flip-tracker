@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const maxDuration = 30;
+export const maxDuration = 45;
 
 interface DealData {
   address: string;
@@ -192,18 +192,8 @@ Return ONLY valid JSON (no markdown, no backticks) with this exact structure. Fi
         max_tokens: 4000,
         tools: [
           {
-            name: "web_search_20250305",
-            description: "Search the web for current information",
-            input_schema: {
-              type: "object",
-              properties: {
-                query: {
-                  type: "string",
-                  description: "The search query",
-                },
-              },
-              required: ["query"],
-            },
+            type: "web_search_20250305",
+            name: "web_search",
           },
         ],
         messages: [
