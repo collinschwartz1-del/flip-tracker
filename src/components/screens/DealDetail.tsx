@@ -141,7 +141,12 @@ export function DealDetail({
           <div className="border-t border-zinc-800 my-2" />
           <Row label={isSold ? "Sale Price" : "Estimated ARV"} value={fmt(isSold ? deal.sale_price : deal.estimated_arv)} valueClass="text-zinc-100 font-bold" />
           <div className="flex justify-between items-center bg-zinc-800/50 -mx-4 px-4 py-3 rounded-xl">
-            <span className="text-sm font-bold text-zinc-200">{isSold ? "Actual Profit" : "Est. Profit"}</span>
+            <div>
+              <span className="text-sm font-bold text-zinc-200">{isSold ? "Actual Profit" : "Proj. Profit"}</span>
+              {!isSold && deal.rehab_budget > 0 && deal.rehab_budget > fin.rehabSpent && (
+                <p className="text-[9px] text-zinc-600 mt-0.5">Based on full {fmt(deal.rehab_budget)} budget</p>
+              )}
+            </div>
             <div className="text-right">
               <span className={`text-lg font-bold ${fin.estimatedProfit >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                 {fmt(fin.estimatedProfit)}

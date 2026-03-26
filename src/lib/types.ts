@@ -97,6 +97,7 @@ export interface DealFinancials {
   sellingCosts: number;
   budgetUsed: number;
   budgetRemaining: number;
+  projectedRehabTotal: number; // MAX(rehab_budget, rehabSpent) for active; rehabSpent for sold
   estimatedProfit: number;
   actualProfit?: number;
   roi: number;

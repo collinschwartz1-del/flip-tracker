@@ -176,7 +176,7 @@ export function Dashboard({
               </div>
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-zinc-500">
-                  Est. Profit
+                  {deal.status === "sold" || deal.status === "closed" ? "Actual Profit" : "Proj. Profit"}
                 </p>
                 <p
                   className={`text-sm font-bold ${
@@ -187,6 +187,11 @@ export function Dashboard({
                 >
                   {fmt(deal.estimatedProfit)}
                 </p>
+                {deal.status !== "sold" && deal.status !== "closed" && deal.rehab_budget > 0 && deal.rehab_budget > deal.rehabSpent && (
+                  <p className="text-[9px] text-zinc-600 mt-0.5">
+                    On {fmt(deal.rehab_budget)} budget
+                  </p>
+                )}
               </div>
             </div>
             <div className="mt-3 h-1.5 bg-zinc-800 rounded-full overflow-hidden">

@@ -74,6 +74,13 @@ export function calcDealFinancials(
   let actualProfit: number | undefined;
   let roi: number;
 
+  // For active deals: use the GREATER of rehab budget or actual spent
+  // This prevents inflated profit projections when spending is under budget
+  // For sold deals: use actual spent (deal is done)
+  const projectedRehabTotal = isSold
+    ? rehabSpent
+    : Math.max(deal.rehab_budget || 0, rehabSpent);
+
   if (isSold && deal.sale_price) {
     const allExpenses = expenses.reduce((s, e) => s + Number(e.amount), 0);
     actualProfit =
@@ -87,14 +94,16 @@ export function calcDealFinancials(
         ? actualProfit / (deal.purchase_price + allExpenses)
         : 0;
   } else {
+    // Use projectedRehabTotal (full budget) instead of just rehabSpent
+    const projectedTotalSpent = projectedRehabTotal + holdingSpent;
     estimatedProfit =
       (deal.estimated_arv || 0) -
       (deal.purchase_price || 0) -
-      totalSpent -
+      projectedTotalSpent -
       sellingCosts;
     roi =
-      (deal.purchase_price || 0) + totalSpent > 0
-        ? estimatedProfit / ((deal.purchase_price || 0) + totalSpent)
+      (deal.purchase_price || 0) + projectedTotalSpent > 0
+        ? estimatedProfit / ((deal.purchase_price || 0) + projectedTotalSpent)
         : 0;
   }
 
@@ -106,6 +115,7 @@ export function calcDealFinancials(
     sellingCosts,
     budgetUsed,
     budgetRemaining: (deal.rehab_budget || 0) - rehabSpent,
+    projectedRehabTotal,
     estimatedProfit,
     actualProfit,
     roi,
