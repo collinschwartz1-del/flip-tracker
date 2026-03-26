@@ -7,7 +7,10 @@ import type { AppActions, ScreenParams } from "@/components/AppShell";
 import { Spinner } from "@/components/ui";
 import { CMAUpload } from "@/components/CMAUpload";
 import { AnalysisViewer } from "@/components/AnalysisViewer";
-import { buildAnalysisPromptV2 } from "@/lib/analysis-prompt";
+import { buildScreeningPrompt } from "@/lib/screening-prompt";
+import { launchFullAnalysis } from "@/lib/full-analysis-bridge";
+import { QuickScreenCard, type QuickScreenResult } from "@/components/QuickScreen";
+import { ImportAnalysis } from "@/components/ImportAnalysis";
 import {
   buildDefaultInputs, calcFullMatrix, calcKillZones,
   calcCashComparison, calcOpportunityCost,
@@ -15,54 +18,6 @@ import {
   type OpportunityCost as OpportunityCostType, type FlipCalculatorInputs,
 } from "@/lib/flip-calculator";
 import * as data from "@/lib/data";
-
-function buildAnalysisPrompt(deal: PipelineDeal): string {
-  return `You are an adversarial flip deal analyzer for Acreage Brothers, an Omaha NE fix-and-flip operation. Analyze this deal and return ONLY valid JSON (no markdown, no code fences).
-
-DEAL:
-- Address: ${deal.address}
-- Asking Price: $${deal.asking_price?.toLocaleString()}
-${deal.beds ? `- Beds: ${deal.beds}` : ""}
-${deal.baths ? `- Baths: ${deal.baths}` : ""}
-${deal.sqft ? `- SqFt: ${deal.sqft}` : ""}
-${deal.year_built ? `- Year Built: ${deal.year_built}` : ""}
-${deal.source ? `- Source: ${deal.source}` : ""}
-${deal.notes ? `- Notes: ${deal.notes}` : ""}
-
-Return JSON with this structure:
-{
-  "verdict": "GO" | "MAYBE" | "NO GO",
-  "summary": "2-3 sentence verdict summary",
-  "estimated_arv": number,
-  "rehab_estimate": { "light": number, "moderate": number, "heavy": number },
-  "base_case_profit": number,
-  "base_case_roi": number,
-  "max_purchase_price": number,
-  "risk_level": "LOW" | "MEDIUM" | "HIGH" | "EXTREME",
-  "risk_tests": [{ "name": string, "rating": "PASS" | "WARN" | "FAIL", "detail": string }],
-  "profit_matrix": {
-    "best_light": { "profit": number, "roi": number, "color": "green" | "amber" | "red" },
-    "best_moderate": { "profit": number, "roi": number, "color": "green" | "amber" | "red" },
-    "best_heavy": { "profit": number, "roi": number, "color": "green" | "amber" | "red" },
-    "base_light": { "profit": number, "roi": number, "color": "green" | "amber" | "red" },
-    "base_moderate": { "profit": number, "roi": number, "color": "green" | "amber" | "red" },
-    "base_heavy": { "profit": number, "roi": number, "color": "green" | "amber" | "red" },
-    "worst_light": { "profit": number, "roi": number, "color": "green" | "amber" | "red" },
-    "worst_moderate": { "profit": number, "roi": number, "color": "green" | "amber" | "red" },
-    "worst_heavy": { "profit": number, "roi": number, "color": "green" | "amber" | "red" }
-  },
-  "kill_zones": {
-    "max_purchase_for_30k": number,
-    "arv_floor_breakeven": number,
-    "rehab_ceiling_20k_profit": number,
-    "max_hold_months": number
-  },
-  "conditions": [string],
-  "missing_data": [string]
-}
-
-Be adversarial. Assume moderate rehab unless evidence suggests otherwise. Use Omaha NE market data. If data is thin, say so and use conservative estimates.`;
-}
 
 export function PipelineDetail({
   dealId,
@@ -89,7 +44,13 @@ export function PipelineDetail({
   const [notes, setNotes] = useState<any[]>([]);
   const [progress, setProgress] = useState("");
 
-  // V2 analysis state
+  // Quick Screen state
+  const [quickScreen, setQuickScreen] = useState<QuickScreenResult | null>(null);
+
+  // Full Analysis (imported) state
+  const [fullAnalysis, setFullAnalysis] = useState<any>(null);
+
+  // V2 analysis state (for imported full analyses)
   const [aiData, setAiData] = useState<AnalysisResultV2 | null>(null);
   const [matrix, setMatrix] = useState<MatrixResult | null>(null);
   const [killZonesData, setKillZonesData] = useState<KillZonesType | null>(null);
@@ -141,11 +102,20 @@ export function PipelineDetail({
           : a.analysis_result;
         setAnalysisResult(parsed);
 
-        // If V2 analysis, hydrate calculator
-        // V2 fields are embedded inside analysis_result as _version and _calculator_inputs
-        const isV2 = parsed._version >= 2 || ((a as any).analysis_version >= 2);
-        if (isV2 && parsed.rehab_assessment) {
-          hydrateV2(parsed as AnalysisResultV2, parsed._calculator_inputs || (a as any).calculator_inputs);
+        // Check if this is a saved quick screen result
+        if (parsed._type === "quick_screen" && parsed.screen_verdict) {
+          setQuickScreen(parsed as QuickScreenResult);
+        }
+        // Check if V2/V3 full analysis (imported or legacy V2)
+        else if (parsed._version >= 2 || parsed.rehab_assessment) {
+          const isV2 = parsed._version >= 2 || ((a as any).analysis_version >= 2);
+          if (isV2 && parsed.rehab_assessment) {
+            hydrateV2(parsed as AnalysisResultV2, parsed._calculator_inputs || (a as any).calculator_inputs);
+          }
+        }
+        // Check if imported full analysis (v3)
+        else if (parsed._version >= 3 && parsed._imported_data) {
+          setFullAnalysis(parsed._imported_data);
         }
       }
     } catch (err) {
@@ -178,168 +148,172 @@ export function PipelineDetail({
 
   const status = PIPELINE_STATUS_CONFIG[deal.status];
   const fmt = (n: number | null | undefined) =>
-    n != null ? `$${Math.round(n).toLocaleString()}` : "Ã¢ÂÂ";
+    n != null ? `$${Math.round(n).toLocaleString()}` : "\u2014";
 
-  const runAnalysis = async () => {
+  // --- TIER 1: Quick Screen ---
+  const handleQuickScreen = async () => {
     setAnalyzing(true);
-    setProgress("Building analysis prompt...");
+    setProgress("Running quick screen...");
     try {
       // Save listing URL if provided
       if (listingUrl.trim()) {
         await data.updatePipelineDeal(dealId, { listing_url: listingUrl.trim() });
       }
-      await data.updatePipelineDeal(dealId, { status: "analyzing" });
 
-      // 1. Build V2 prompt with all available data
-      const prompt = buildAnalysisPromptV2(deal, deal.cma_comps);
-
-      setProgress("Running adversarial analysis (web search enabled)...");
-
-      // 2. Send to API (streaming SSE response)
-      const response = await fetch("/api/analyze", {
+      const prompt = buildScreeningPrompt(deal);
+      const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, listing_url: listingUrl.trim() || deal.listing_url || undefined }),
+        body: JSON.stringify({ prompt }),
       });
 
-      if (!response.ok) {
-        let errMsg = `Analysis failed: ${response.status}`;
-        try { const errData = await response.json(); errMsg = errData.error || errMsg; } catch {}
-        throw new Error(errMsg);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Screen failed");
       }
 
-      // Read SSE stream from edge function
-      setProgress("AI is analyzing (web search + reasoning)...");
-      let text = "";
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
+      const respData = await res.json();
+      const text = respData.content || "";
+      const jsonStart = text.indexOf("{");
+      const jsonEnd = text.lastIndexOf("}");
+      if (jsonStart === -1) throw new Error("No results returned");
+      const result: QuickScreenResult = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+      setQuickScreen(result);
 
-      if (reader) {
-        let buffer = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            try {
-              const event = JSON.parse(line.slice(6));
-              if (event.type === "done") text = event.content || "";
-              if (event.type === "error") throw new Error(event.error || "Streaming error");
-            } catch (e: any) {
-              if (e.message && !e.message.includes("JSON")) throw e;
-            }
-          }
-        }
-      } else {
-        // Fallback for non-streaming response
-        const respData = await response.json();
-        text = typeof respData.content === "string"
-          ? respData.content
-          : respData.content?.[0]?.text || "";
-      }
-
-      if (!text) throw new Error("AI returned empty response. Try again.");
-
-      const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-
-      setProgress("Parsing results...");
-
-      // 3. Parse AI response — robust extraction between first { and last }
-      let aiResult: AnalysisResultV2;
-      try {
-        const jsonStart = cleaned.indexOf("{");
-        const jsonEnd = cleaned.lastIndexOf("}");
-        if (jsonStart === -1 || jsonEnd === -1) throw new Error("No JSON object found");
-        const jsonStr = cleaned.slice(jsonStart, jsonEnd + 1);
-        aiResult = JSON.parse(jsonStr);
-      } catch (parseErr: any) {
-        console.error("Parse error:", parseErr.message, "Raw text:", text.slice(0, 500));
-        throw new Error("Failed to parse analysis result — AI may have returned malformed JSON");
-      }
-
-      // Validate required V2 fields exist
-      if (!aiResult.rehab_assessment || !aiResult.arv_validation || !aiResult.verdict) {
-        throw new Error("AI response missing required fields. Try re-running the analysis.");
-      }
-
-      // 4. Build calculator inputs from AI data (null-safe)
-      const ra = aiResult.rehab_assessment || {} as any;
-      const av = aiResult.arv_validation || {} as any;
-      const hc = aiResult.holding_costs || {} as any;
-      const inputs = buildDefaultInputs(deal.asking_price || 0, {
-        rehabLight: ra.light?.cost,
-        rehabModerate: ra.moderate?.cost,
-        rehabHeavy: ra.heavy?.cost,
-        rehabLightWeeks: ra.light?.timeline_weeks,
-        rehabModerateWeeks: ra.moderate?.timeline_weeks,
-        rehabHeavyWeeks: ra.heavy?.timeline_weeks,
-        rehabLightScope: ra.light?.scope,
-        rehabModerateScope: ra.moderate?.scope,
-        rehabHeavyScope: ra.heavy?.scope,
-        arvBest: av.independent_arv_high,
-        arvBase: av.independent_arv_base,
-        arvWorst: av.independent_arv_low,
-        monthlyTaxes: hc.monthly_taxes,
-        monthlyInsurance: hc.monthly_insurance,
-        monthlyUtilities: hc.monthly_utilities,
-        monthlyLawnSnow: hc.monthly_lawn_snow,
-      });
-
-      // 5. Run all financial calculations client-side
-      const m = calcFullMatrix(inputs);
-      const kz = calcKillZones(inputs, m.baseCase);
-      const fin = calcCashComparison(inputs);
-      const oc = calcOpportunityCost(m.baseCase.cashInvested, m.baseCase.totalMonths, m.baseCase.grossProfit);
-
-      setProgress("Saving analysis...");
-
-      // 6. Save to database — embed V2 fields inside analysis_result JSONB
-      //    (no SQL migration needed — _calculator_inputs and _version live inside the existing column)
-      const riskCount = (aiResult.risk_tests || []).filter(r => r.rating === "HIGH" || r.rating === "CRITICAL").length;
-      const analysisResultWithMeta = {
-        ...aiResult,
-        _calculator_inputs: inputs,
-        _version: 2,
-      };
+      // Save to database
+      const screenWithMeta = { ...result, _type: "quick_screen", _version: 1 };
       await data.createAnalysis({
         pipeline_deal_id: dealId,
         input_data: { address: deal.address, asking_price: deal.asking_price },
-        analysis_result: analysisResultWithMeta as any,
-        verdict: aiResult.verdict.decision,
-        base_case_profit: m.baseCase.grossProfit,
-        base_case_roi: m.baseCase.roi / 100,
-        max_purchase_price: kz.maxPurchaseFor30kProfit,
-        arv_validated: aiResult.arv_validation.independent_arv_base,
-        rehab_moderate: aiResult.rehab_assessment.moderate.cost,
-        risk_level: riskCount >= 3 ? "HIGH" : riskCount >= 1 ? "MEDIUM" : "LOW",
+        analysis_result: screenWithMeta as any,
+        verdict: result.screen_verdict,
+        base_case_profit: result.estimated_profit_range?.base_case || 0,
+        base_case_roi: 0,
+        max_purchase_price: 0,
+        arv_validated: result.estimated_arv_range?.mid || 0,
+        rehab_moderate: result.estimated_rehab_range?.moderate || 0,
+        risk_level: result.confidence === "LOW" ? "HIGH" : result.confidence === "HIGH" ? "LOW" : "MEDIUM",
         status: "completed",
         error_message: null,
         triggered_by: userEmail,
       } as any);
 
-      // Update deal with AI estimates
+      // Update deal estimates from screen
       await data.updatePipelineDeal(dealId, {
-        status: "new",
-        estimated_arv: aiResult.arv_validation.independent_arv_base,
-        estimated_rehab: aiResult.rehab_assessment.moderate.cost,
+        estimated_arv: result.estimated_arv_range?.mid || deal.estimated_arv,
+        estimated_rehab: result.estimated_rehab_range?.moderate || deal.estimated_rehab,
+        estimated_profit: result.estimated_profit_range?.base_case || deal.estimated_profit,
+      });
+
+      await actions.refreshData();
+      actions.toast("Quick screen complete!");
+    } catch (err: any) {
+      actions.toast(err.message || "Screen failed \u2014 try again", "error");
+    }
+    setAnalyzing(false);
+    setProgress("");
+  };
+
+  // --- TIER 2: Full Analysis (opens Claude chat) ---
+  const handleFullAnalysis = () => {
+    launchFullAnalysis(deal, actions.toast);
+  };
+
+  // --- Import Full Analysis from Claude ---
+  const handleImportAnalysis = async (importedData: any) => {
+    try {
+      // Convert imported data to calculator inputs
+      const inputs = buildDefaultInputs(deal.asking_price || 0, {
+        rehabLight: importedData.rehab?.light?.cost,
+        rehabModerate: importedData.rehab?.moderate?.cost,
+        rehabHeavy: importedData.rehab?.heavy?.cost,
+        rehabLightWeeks: importedData.rehab?.light?.weeks,
+        rehabModerateWeeks: importedData.rehab?.moderate?.weeks,
+        rehabHeavyWeeks: importedData.rehab?.heavy?.weeks,
+        rehabLightScope: importedData.rehab?.light?.scope,
+        rehabModerateScope: importedData.rehab?.moderate?.scope,
+        rehabHeavyScope: importedData.rehab?.heavy?.scope,
+        arvBest: importedData.arv?.independent_high || importedData.exit?.best?.arv,
+        arvBase: importedData.arv?.independent_base || importedData.exit?.base?.arv,
+        arvWorst: importedData.arv?.independent_low || importedData.exit?.worst?.arv,
+        monthlyTaxes: importedData.holding?.monthly_taxes,
+        monthlyInsurance: importedData.holding?.monthly_insurance,
+        monthlyUtilities: importedData.holding?.monthly_utilities,
+        monthlyLawnSnow: importedData.holding?.monthly_lawn_snow,
+      });
+
+      // Run calculator
+      const m = calcFullMatrix(inputs);
+      const kz = calcKillZones(inputs, m.baseCase);
+      const fin = calcCashComparison(inputs);
+      const oc = calcOpportunityCost(m.baseCase.cashInvested, m.baseCase.totalMonths, m.baseCase.grossProfit);
+
+      // Save to database
+      const analysisPayload = {
+        ...importedData,
+        _imported_data: importedData,
+        _calculator_inputs: inputs,
+        _version: 3,
+        _type: "full_import",
+      };
+
+      await data.createAnalysis({
+        pipeline_deal_id: dealId,
+        input_data: { address: deal.address, asking_price: deal.asking_price },
+        analysis_result: analysisPayload as any,
+        verdict: importedData.verdict?.decision || "IMPORTED",
+        base_case_profit: m.baseCase.grossProfit,
+        base_case_roi: m.baseCase.roi / 100,
+        max_purchase_price: kz.maxPurchaseFor30kProfit,
+        arv_validated: importedData.arv?.independent_base || 0,
+        rehab_moderate: importedData.rehab?.moderate?.cost || 0,
+        risk_level: (importedData.risks || []).filter((r: any) => r.rating === "HIGH" || r.rating === "CRITICAL").length >= 3 ? "HIGH" : "MEDIUM",
+        status: "completed",
+        error_message: null,
+        triggered_by: userEmail,
+      } as any);
+
+      // Update deal
+      await data.updatePipelineDeal(dealId, {
+        estimated_arv: importedData.arv?.independent_base || deal.estimated_arv,
+        estimated_rehab: importedData.rehab?.moderate?.cost || deal.estimated_rehab,
         estimated_profit: m.baseCase.grossProfit,
       });
 
-      // 7. Store in local state
-      setAnalysisResult(aiResult as any);
-      hydrateV2(aiResult, inputs as any);
+      // If imported data has rehab_assessment shape, hydrate V2 viewer
+      if (importedData.rehab?.moderate?.cost && importedData.arv?.independent_base) {
+        // Convert import format to V2 format for the AnalysisViewer
+        const v2Shape: any = {
+          rehab_assessment: {
+            light: { cost: importedData.rehab.light.cost, timeline_weeks: importedData.rehab.light.weeks, scope: importedData.rehab.light.scope },
+            moderate: { cost: importedData.rehab.moderate.cost, timeline_weeks: importedData.rehab.moderate.weeks, scope: importedData.rehab.moderate.scope },
+            heavy: { cost: importedData.rehab.heavy.cost, timeline_weeks: importedData.rehab.heavy.weeks, scope: importedData.rehab.heavy.scope },
+          },
+          arv_validation: {
+            independent_arv_low: importedData.arv.independent_low,
+            independent_arv_base: importedData.arv.independent_base,
+            independent_arv_high: importedData.arv.independent_high,
+            median_psf: importedData.arv.median_psf,
+          },
+          holding_costs: importedData.holding || {},
+          risk_tests: (importedData.risks || []).map((r: any) => ({ name: r.name, rating: r.rating, detail: r.detail })),
+          verdict: importedData.verdict || {},
+          comps: importedData.comps || [],
+          market_snapshot: importedData.market || {},
+          property_profile: importedData.deal || {},
+        };
+        setAiData(v2Shape as AnalysisResultV2);
+        setCalcInputs(inputs);
+        setMatrix(m);
+        setKillZonesData(kz);
+        setFinancingData(fin);
+        setOppCost(oc);
+      }
+
+      setFullAnalysis({ data: importedData, calcInputs: inputs, matrix: m, killZones: kz });
       await actions.refreshData();
-      await loadAnalysis();
-      actions.toast("Analysis complete");
     } catch (err: any) {
-      actions.toast(err.message || "Analysis failed", "error");
-      await data.updatePipelineDeal(dealId, { status: "new" });
-    } finally {
-      setAnalyzing(false);
-      setProgress("");
+      throw err; // Let ImportAnalysis component handle the error
     }
   };
 
@@ -399,18 +373,9 @@ export function PipelineDetail({
     }
   };
 
-  const verdictColors: Record<string, string> = {
-    GO: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
-    MAYBE: "bg-amber-500/20 text-amber-400 border-amber-500/30",
-    "NO GO": "bg-red-500/20 text-red-400 border-red-500/30",
-  };
-
-  const cellColor = (c: string) =>
-    c === "green"
-      ? "bg-emerald-900/40 text-emerald-300"
-      : c === "amber"
-      ? "bg-amber-900/40 text-amber-300"
-      : "bg-red-900/40 text-red-300";
+  // Determine what analysis view to show
+  const hasFullV2 = aiData && matrix && killZonesData && financingData && oppCost && calcInputs;
+  const hasQuickScreen = quickScreen != null;
 
   return (
     <div className="pb-24">
@@ -420,13 +385,13 @@ export function PipelineDetail({
           onClick={() => actions.navigate("pipeline" as any)}
           className="text-xs text-zinc-500 mb-2 flex items-center gap-1"
         >
-          Ã¢ÂÂ Pipeline
+          \u2190 Pipeline
         </button>
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <h1 className="text-lg font-bold text-zinc-100">{deal.address}</h1>
             <p className="text-xs text-zinc-500 mt-0.5">
-              Ask: {fmt(deal.asking_price)} ÃÂ· Source: {deal.source || "Ã¢ÂÂ"}
+              Ask: {fmt(deal.asking_price)} \u00b7 Source: {deal.source || "\u2014"}
             </p>
           </div>
           <span
@@ -488,10 +453,10 @@ export function PipelineDetail({
         )}
 
         {/* Listing URL input */}
-        <div className="px-4 mb-2">
+        <div className="mb-2">
           <label className="block text-xs text-zinc-500 mb-1">
             Zillow / Redfin Link{" "}
-            <span className="text-zinc-700">(optional â improves analysis accuracy)</span>
+            <span className="text-zinc-700">(optional \u2014 improves analysis accuracy)</span>
           </label>
           <input
             value={listingUrl}
@@ -501,13 +466,13 @@ export function PipelineDetail({
           />
           {listingUrl && (
             <p className="text-[10px] text-emerald-500 mt-1">
-              \u2713 Listing data will be included in AI analysis
+              \u2713 Listing URL will be included in Claude prompt
             </p>
           )}
         </div>
 
         {/* CMA Comp Upload */}
-        <div className="px-4 mb-3">
+        <div className="mb-3">
           <CMAUpload
             comps={deal?.cma_comps || []}
             pdfName={deal?.cma_pdf_name || ""}
@@ -524,237 +489,57 @@ export function PipelineDetail({
           />
         </div>
 
-        {/* AI Analysis button */}
-        <button
-          onClick={runAnalysis}
-          disabled={analyzing}
-          className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-zinc-950 font-semibold text-sm disabled:opacity-50"
-        >
-          {analyzing
-            ? (progress || "Analyzing...")
-            : analysisResult
-            ? "Re-run AI Analysis (V2)"
-            : "Run AI Analysis"}
-        </button>
-
-        {/* Analysis Results */}
-        {loadingAnalysis ? (
-          <Spinner />
-        ) : aiData && matrix && killZonesData && financingData && oppCost && calcInputs ? (
-          <AnalysisViewer
-            aiData={aiData}
-            matrix={matrix}
-            killZones={killZonesData}
-            financing={financingData}
-            oppCost={oppCost}
-            calcInputs={calcInputs}
-            deal={deal}
-          />
-        ) : analysisResult ? (
-          <div className="space-y-4">
-            {/* V1 Fallback - Verdict */}
-            <div
-              className={`p-4 rounded-xl border ${
-                verdictColors[analysisResult.verdict] || verdictColors["MAYBE"]
-              }`}
+        {/* === ANALYSIS SECTION === */}
+        <div className="space-y-3">
+          {/* Show Quick Screen button if no analysis yet */}
+          {!hasQuickScreen && !hasFullV2 && !analyzing && (
+            <button
+              onClick={handleQuickScreen}
+              className="w-full py-4 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold rounded-xl text-sm transition-colors flex items-center justify-center gap-2 active:scale-[0.98]"
             >
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-lg font-black">
-                  {analysisResult.verdict}
-                </span>
-                <span className="text-xs opacity-70">
-                  Risk: {analysisResult.risk_level}
-                </span>
-              </div>
-              <p className="text-sm opacity-90">{analysisResult.summary}</p>
+              Quick Screen
+            </button>
+          )}
+
+          {/* Loading state */}
+          {analyzing && (
+            <div className="w-full py-4 bg-zinc-900 border border-amber-500/30 rounded-xl text-center">
+              <div className="w-6 h-6 border-2 border-zinc-600 border-t-amber-400 rounded-full animate-spin mx-auto mb-2" />
+              <p className="text-sm text-amber-400 font-medium">{progress}</p>
             </div>
+          )}
 
-            {/* Key numbers */}
-            <div className="grid grid-cols-2 gap-2">
-              <div className="bg-zinc-900/60 rounded-lg p-3">
-                <div className="text-[10px] text-zinc-500">BASE PROFIT</div>
-                <div className="text-sm font-bold text-zinc-100">
-                  {fmt(analysisResult.base_case_profit)}
-                </div>
-              </div>
-              <div className="bg-zinc-900/60 rounded-lg p-3">
-                <div className="text-[10px] text-zinc-500">BASE ROI</div>
-                <div className="text-sm font-bold text-zinc-100">
-                  {analysisResult.base_case_roi != null
-                    ? `${Math.round(analysisResult.base_case_roi)}%`
-                    : "Ã¢ÂÂ"}
-                </div>
-              </div>
-              <div className="bg-zinc-900/60 rounded-lg p-3">
-                <div className="text-[10px] text-zinc-500">MAX PURCHASE</div>
-                <div className="text-sm font-bold text-amber-400">
-                  {fmt(analysisResult.max_purchase_price)}
-                </div>
-              </div>
-              <div className="bg-zinc-900/60 rounded-lg p-3">
-                <div className="text-[10px] text-zinc-500">AI ARV</div>
-                <div className="text-sm font-bold text-zinc-100">
-                  {fmt(analysisResult.estimated_arv)}
-                </div>
-              </div>
-            </div>
+          {loadingAnalysis ? (
+            <Spinner />
+          ) : hasFullV2 ? (
+            /* Show Full Analysis (9-tab viewer) if imported or V2 hydrated */
+            <AnalysisViewer
+              aiData={aiData!}
+              matrix={matrix!}
+              killZones={killZonesData!}
+              financing={financingData!}
+              oppCost={oppCost!}
+              calcInputs={calcInputs!}
+              deal={deal}
+            />
+          ) : hasQuickScreen ? (
+            /* Show Quick Screen results */
+            <QuickScreenCard
+              result={quickScreen!}
+              onRunFull={handleFullAnalysis}
+              onRerun={handleQuickScreen}
+            />
+          ) : null}
+        </div>
 
-            {/* 9-cell profit matrix */}
-            {analysisResult.profit_matrix && (
-              <div>
-                <h3 className="text-xs font-semibold text-zinc-400 mb-2">
-                  PROFIT MATRIX
-                </h3>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-zinc-500">
-                        <th className="text-left p-1.5"></th>
-                        <th className="p-1.5">Light</th>
-                        <th className="p-1.5">Moderate</th>
-                        <th className="p-1.5">Heavy</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {["best", "base", "worst"].map((scenario) => (
-                        <tr key={scenario}>
-                          <td className="p-1.5 text-zinc-500 capitalize font-medium">
-                            {scenario}
-                          </td>
-                          {["light", "moderate", "heavy"].map((rehab) => {
-                            const key = `${scenario}_${rehab}`;
-                            const cell = analysisResult.profit_matrix[key];
-                            if (!cell) return <td key={key} className="p-1.5">Ã¢ÂÂ</td>;
-                            return (
-                              <td
-                                key={key}
-                                className={`p-1.5 rounded text-center font-mono ${cellColor(
-                                  cell.color
-                                )}`}
-                              >
-                                {fmt(cell.profit)}
-                                <br />
-                                <span className="text-[9px] opacity-70">
-                                  {cell.roi}%
-                                </span>
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Risk tests */}
-            {analysisResult.risk_tests && analysisResult.risk_tests.length > 0 && (
-              <div>
-                <h3 className="text-xs font-semibold text-zinc-400 mb-2">
-                  RISK TESTS
-                </h3>
-                <div className="space-y-1.5">
-                  {analysisResult.risk_tests.map((test: any, i: number) => (
-                    <div
-                      key={i}
-                      className="flex items-start gap-2 bg-zinc-900/40 rounded-lg p-2.5"
-                    >
-                      <span
-                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                          test.rating === "PASS"
-                            ? "bg-emerald-900/50 text-emerald-400"
-                            : test.rating === "WARN"
-                            ? "bg-amber-900/50 text-amber-400"
-                            : "bg-red-900/50 text-red-400"
-                        }`}
-                      >
-                        {test.rating}
-                      </span>
-                      <div className="flex-1">
-                        <span className="text-xs font-medium text-zinc-300">
-                          {test.name}
-                        </span>
-                        <p className="text-[10px] text-zinc-500 mt-0.5">
-                          {test.detail}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Kill zones */}
-            {analysisResult.kill_zones && (
-              <div>
-                <h3 className="text-xs font-semibold text-zinc-400 mb-2">
-                  KILL ZONES
-                </h3>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-red-900/20 border border-red-900/30 rounded-lg p-2.5">
-                    <div className="text-[10px] text-red-400/70">
-                      MAX BUY FOR $30K PROFIT
-                    </div>
-                    <div className="text-sm font-bold text-red-300">
-                      {fmt(analysisResult.kill_zones.max_purchase_for_30k)}
-                    </div>
-                  </div>
-                  <div className="bg-red-900/20 border border-red-900/30 rounded-lg p-2.5">
-                    <div className="text-[10px] text-red-400/70">
-                      ARV FLOOR (BREAKEVEN)
-                    </div>
-                    <div className="text-sm font-bold text-red-300">
-                      {fmt(analysisResult.kill_zones.arv_floor_breakeven)}
-                    </div>
-                  </div>
-                  <div className="bg-red-900/20 border border-red-900/30 rounded-lg p-2.5">
-                    <div className="text-[10px] text-red-400/70">
-                      REHAB CAP ($20K PROFIT)
-                    </div>
-                    <div className="text-sm font-bold text-red-300">
-                      {fmt(analysisResult.kill_zones.rehab_ceiling_20k_profit)}
-                    </div>
-                  </div>
-                  <div className="bg-red-900/20 border border-red-900/30 rounded-lg p-2.5">
-                    <div className="text-[10px] text-red-400/70">
-                      MAX HOLD MONTHS
-                    </div>
-                    <div className="text-sm font-bold text-red-300">
-                      {analysisResult.kill_zones.max_hold_months || "Ã¢ÂÂ"}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Conditions & Missing data */}
-            {analysisResult.conditions?.length > 0 && (
-              <div>
-                <h3 className="text-xs font-semibold text-zinc-400 mb-1">
-                  CONDITIONS
-                </h3>
-                <ul className="text-xs text-zinc-400 space-y-0.5">
-                  {analysisResult.conditions.map((c: string, i: number) => (
-                    <li key={i}>Ã¢ÂÂ¢ {c}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {analysisResult.missing_data?.length > 0 && (
-              <div>
-                <h3 className="text-xs font-semibold text-zinc-400 mb-1">
-                  MISSING DATA
-                </h3>
-                <ul className="text-xs text-amber-400/70 space-y-0.5">
-                  {analysisResult.missing_data.map((m: string, i: number) => (
-                    <li key={i}>Ã¢ÂÂ  {m}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        ) : null}
+        {/* Import Analysis section \u2014 always visible below */}
+        <div className="mb-4">
+          <ImportAnalysis
+            dealId={dealId}
+            onImport={handleImportAnalysis}
+            toast={actions.toast}
+          />
+        </div>
 
         {/* Action buttons */}
         {deal.status !== "won" && deal.status !== "passed" && deal.status !== "dead" && (
@@ -842,7 +627,7 @@ export function PipelineDetail({
             onClick={promoteDeal}
             className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold text-sm"
           >
-            Won Ã¢ÂÂ Promote to Active Flips
+            Won \u2014 Promote to Active Flips
           </button>
         )}
 
@@ -873,7 +658,7 @@ export function PipelineDetail({
               >
                 <p className="text-xs text-zinc-300">{note.content}</p>
                 <p className="text-[10px] text-zinc-600 mt-1">
-                  {note.author} ÃÂ·{" "}
+                  {note.author} \u00b7{" "}
                   {new Date(note.created_at).toLocaleDateString()}
                 </p>
               </div>
