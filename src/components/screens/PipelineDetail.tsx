@@ -11,6 +11,7 @@ import { buildScreeningPrompt } from "@/lib/screening-prompt";
 import { QuickScreenCard, type QuickScreenResult } from "@/components/QuickScreen";
 import { ImportAnalysis } from "@/components/ImportAnalysis";
 import { FullAnalysisBridge } from "@/components/FullAnalysisBridge";
+import { runFullAnalysis, type FullAnalysisResult, type AnalysisProgress } from "@/lib/analysis-orchestrator";
 import {
   buildDefaultInputs, calcFullMatrix, calcKillZones,
   calcCashComparison, calcOpportunityCost,
@@ -49,6 +50,11 @@ export function PipelineDetail({
 
   // Full Analysis (imported) state
   const [fullAnalysis, setFullAnalysis] = useState<any>(null);
+
+  // V3 agentic analysis state
+  const [v3Result, setV3Result] = useState<FullAnalysisResult | null>(null);
+  const [analysisStep, setAnalysisStep] = useState(0);
+  const [showOfferWarning, setShowOfferWarning] = useState(false);
 
   // V2 analysis state (for imported full analyses)
   const [aiData, setAiData] = useState<AnalysisResultV2 | null>(null);
@@ -106,14 +112,19 @@ export function PipelineDetail({
         if (parsed._type === "quick_screen" && parsed.screen_verdict) {
           setQuickScreen(parsed as QuickScreenResult);
         }
-        // Check if V2/V3 full analysis (imported or legacy V2)
-        else if (parsed._version >= 2 || parsed.rehab_assessment) {
-          const isV2 = parsed._version >= 2 || ((a as any).analysis_version >= 2);
-          if (isV2 && parsed.rehab_assessment) {
-            hydrateV2(parsed as AnalysisResultV2, parsed._calculator_inputs || (a as any).calculator_inputs);
+        // Check if V3 agentic analysis (4-step loop)
+        else if (parsed._version >= 3 && parsed._type === "agentic_analysis" && parsed.rehab_assessment) {
+          hydrateV2(parsed as AnalysisResultV2, parsed._calculator_inputs || (a as any).calculator_inputs);
+          // Also restore step4 flags if present
+          if (parsed.step4) {
+            setV3Result({ status: "complete", step4Data: parsed.step4 } as any);
           }
         }
-        // Check if imported full analysis (v3)
+        // Check if V2 full analysis (legacy or imported)
+        else if ((parsed._version >= 2 || parsed.rehab_assessment) && parsed.rehab_assessment) {
+          hydrateV2(parsed as AnalysisResultV2, parsed._calculator_inputs || (a as any).calculator_inputs);
+        }
+        // Check if imported full analysis
         else if (parsed._version >= 3 && parsed._imported_data) {
           setFullAnalysis(parsed._imported_data);
         }
@@ -214,7 +225,112 @@ export function PipelineDetail({
     setProgress("");
   };
 
-  // --- TIER 2: Full Analysis bridge is rendered as a component (FullAnalysisBridge) ---
+  // --- TIER 2: Full Agentic Analysis (4-step loop) ---
+  const handleRunFullAnalysis = async () => {
+    setAnalyzing(true);
+    setAnalysisStep(0);
+    setProgress("Starting full analysis...");
+    try {
+      if (listingUrl.trim()) {
+        await data.updatePipelineDeal(dealId, { listing_url: listingUrl.trim() });
+      }
+      await data.updatePipelineDeal(dealId, { status: "analyzing" });
+
+      const result = await runFullAnalysis(deal, (p: AnalysisProgress) => {
+        setAnalysisStep(p.step);
+        setProgress(`Step ${p.step}/${p.totalSteps}: ${p.message}`);
+      });
+
+      setV3Result(result);
+
+      if (result.status === "complete" || result.status === "partial_success") {
+        // Hydrate the viewer if we have calculator results
+        if (result.matrix && result.calcInputs && result.killZones) {
+          // Build a V2-compatible shape for the AnalysisViewer
+          const viewerData: any = {
+            ...result.step2Data,
+            comps: result.step1Data?.comps || [],
+            market_snapshot: result.step1Data?.market_indicators || {},
+            property_profile: result.step2Data?.property_profile || {},
+            verdict: result.step3Data?.verdict || { decision: "PENDING", conditions: [], summary: result.note || "" },
+            field_confidence: result.step3Data?.field_confidence || {},
+          };
+          setAiData(viewerData);
+          setCalcInputs(result.calcInputs);
+          setMatrix(result.matrix);
+          setKillZonesData(result.killZones);
+          setFinancingData(result.financing || null);
+          setOppCost(result.oppCost || null);
+        }
+
+        // Save to database
+        const fullPayload = {
+          _version: 3,
+          _type: "agentic_analysis",
+          _calculator_inputs: result.calcInputs,
+          _timings: result.timings,
+          step1: result.step1Data,
+          step2: result.step2Data,
+          step3: result.step3Data,
+          step4: result.step4Data,
+          // V2-compatible fields for hydration on reload
+          rehab_assessment: result.step2Data?.rehab_assessment,
+          arv_validation: result.step2Data?.arv_validation,
+          holding_costs: result.step2Data?.holding_costs,
+          risk_tests: result.step2Data?.risk_tests,
+          verdict: result.step3Data?.verdict || { decision: "PENDING" },
+          comps: result.step1Data?.comps,
+          market_snapshot: result.step1Data?.market_indicators,
+          property_profile: result.step2Data?.property_profile,
+          data_tier: result.step2Data?.data_tier,
+          field_confidence: result.step3Data?.field_confidence,
+        };
+
+        const baseProfit = result.matrix?.baseCase?.grossProfit || 0;
+        const riskCount = (result.step2Data?.risk_tests || []).filter(
+          (r: any) => r.rating === "HIGH" || r.rating === "CRITICAL"
+        ).length;
+
+        await data.createAnalysis({
+          pipeline_deal_id: dealId,
+          input_data: { address: deal.address, asking_price: deal.asking_price },
+          analysis_result: fullPayload as any,
+          verdict: result.step3Data?.verdict?.decision || "PENDING",
+          base_case_profit: baseProfit,
+          base_case_roi: result.matrix?.baseCase ? result.matrix.baseCase.roi / 100 : 0,
+          max_purchase_price: result.killZones?.maxPurchaseFor30kProfit || 0,
+          arv_validated: result.step2Data?.arv_validation?.independent_arv_base || 0,
+          rehab_moderate: result.step2Data?.rehab_assessment?.moderate?.cost || 0,
+          risk_level: riskCount >= 3 ? "HIGH" : riskCount >= 1 ? "MEDIUM" : "LOW",
+          status: "completed",
+          error_message: null,
+          triggered_by: userEmail,
+        } as any);
+
+        await data.updatePipelineDeal(dealId, {
+          status: "new",
+          estimated_arv: result.step2Data?.arv_validation?.independent_arv_base || deal.estimated_arv,
+          estimated_rehab: result.step2Data?.rehab_assessment?.moderate?.cost || deal.estimated_rehab,
+          estimated_profit: baseProfit || deal.estimated_profit,
+        });
+
+        await actions.refreshData();
+        const totalSec = result.timings ? (result.timings.total / 1000).toFixed(0) : "?";
+        actions.toast(result.status === "complete" ? `Full analysis complete (${totalSec}s)` : "Partial analysis saved \u2014 verdict step failed");
+      } else {
+        // Failed — reset deal status
+        await data.updatePipelineDeal(dealId, { status: "new" });
+        actions.toast(result.fallbackMessage || "Analysis failed \u2014 try again", "error");
+      }
+    } catch (err: any) {
+      actions.toast(err.message || "Analysis failed", "error");
+      await data.updatePipelineDeal(dealId, { status: "new" });
+    } finally {
+      setAnalyzing(false);
+      setProgress("");
+      setAnalysisStep(0);
+    }
+  };
 
   // --- Import Full Analysis from Claude ---
   const handleImportAnalysis = async (importedData: any) => {
@@ -490,43 +606,115 @@ export function PipelineDetail({
         <div className="space-y-3">
           {/* Show Quick Screen button if no analysis yet */}
           {!hasQuickScreen && !hasFullV2 && !analyzing && (
-            <button
-              onClick={handleQuickScreen}
-              className="w-full py-4 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold rounded-xl text-sm transition-colors flex items-center justify-center gap-2 active:scale-[0.98]"
-            >
-              Quick Screen
-            </button>
+            <div className="space-y-2">
+              <button
+                onClick={handleQuickScreen}
+                className="w-full py-4 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold rounded-xl text-sm transition-colors flex items-center justify-center gap-2 active:scale-[0.98]"
+              >
+                Quick Screen (20s)
+              </button>
+              <button
+                onClick={handleRunFullAnalysis}
+                className="w-full py-3 bg-zinc-900 border border-amber-500/30 text-amber-400 font-semibold rounded-xl text-sm active:scale-[0.98]"
+              >
+                Run Full Analysis (60s)
+              </button>
+            </div>
           )}
 
-          {/* Loading state */}
+          {/* Loading state with step progress */}
           {analyzing && (
-            <div className="w-full py-4 bg-zinc-900 border border-amber-500/30 rounded-xl text-center">
-              <div className="w-6 h-6 border-2 border-zinc-600 border-t-amber-400 rounded-full animate-spin mx-auto mb-2" />
+            <div className="w-full py-5 bg-zinc-900 border border-amber-500/30 rounded-xl text-center space-y-3">
+              <div className="w-6 h-6 border-2 border-zinc-600 border-t-amber-400 rounded-full animate-spin mx-auto" />
               <p className="text-sm text-amber-400 font-medium">{progress}</p>
+              {analysisStep > 0 && (
+                <div className="flex justify-center gap-1.5 px-4">
+                  {[1, 2, 3, 4].map((s) => (
+                    <div
+                      key={s}
+                      className={`h-1.5 flex-1 rounded-full transition-colors ${
+                        s < analysisStep ? "bg-emerald-500" : s === analysisStep ? "bg-amber-500 animate-pulse" : "bg-zinc-800"
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
           {loadingAnalysis ? (
             <Spinner />
           ) : hasFullV2 ? (
-            /* Show Full Analysis (9-tab viewer) if imported or V2 hydrated */
-            <AnalysisViewer
-              aiData={aiData!}
-              matrix={matrix!}
-              killZones={killZonesData!}
-              financing={financingData!}
-              oppCost={oppCost!}
-              calcInputs={calcInputs!}
-              deal={deal}
-            />
+            /* Show Full Analysis (9-tab viewer) */
+            <>
+              <AnalysisViewer
+                aiData={aiData!}
+                matrix={matrix!}
+                killZones={killZonesData!}
+                financing={financingData!}
+                oppCost={oppCost!}
+                calcInputs={calcInputs!}
+                deal={deal}
+              />
+              {/* Step 4 advisory flags */}
+              {v3Result?.step4Data?.flags?.length > 0 && (
+                <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-amber-400 uppercase tracking-wider">
+                    Self-Check Flags ({v3Result!.step4Data.flags.length} found)
+                  </p>
+                  {v3Result!.step4Data.flags.map((f: any, i: number) => (
+                    <div key={i} className="bg-zinc-900/60 rounded-lg p-3 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${f.severity === "ERROR" ? "bg-red-900/50 text-red-400" : "bg-amber-900/50 text-amber-400"}`}>
+                          {f.severity}
+                        </span>
+                        <span className="text-xs text-zinc-300">{f.field}</span>
+                      </div>
+                      <p className="text-[11px] text-zinc-400">{f.problem}</p>
+                      <p className="text-[10px] text-zinc-500">{f.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Step 4 auto-corrections applied */}
+              {v3Result?.step4Data?.auto_corrections?.length > 0 && (
+                <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-3">
+                  <p className="text-[10px] text-blue-400 font-semibold uppercase tracking-wider mb-1">
+                    Auto-corrections applied
+                  </p>
+                  {v3Result!.step4Data.auto_corrections.map((c: any, i: number) => (
+                    <p key={i} className="text-[10px] text-zinc-500">{c.field}: {c.original} \u2192 {c.corrected} \u2014 {c.reason}</p>
+                  ))}
+                </div>
+              )}
+              {/* Re-run button */}
+              {!analyzing && (
+                <button
+                  onClick={handleRunFullAnalysis}
+                  className="w-full py-2.5 bg-zinc-900 border border-zinc-800 text-zinc-500 font-medium rounded-xl text-xs active:scale-[0.98]"
+                >
+                  Re-run Full Analysis
+                </button>
+              )}
+            </>
           ) : hasQuickScreen ? (
-            /* Show Quick Screen results + Full Analysis bridge below */
+            /* Show Quick Screen results + Full Analysis options */
             <>
               <QuickScreenCard
                 result={quickScreen!}
-                onRunFull={() => {}} // Bridge component handles this below
+                onRunFull={handleRunFullAnalysis}
                 onRerun={handleQuickScreen}
               />
+              {/* In-app full analysis button */}
+              {!analyzing && (
+                <button
+                  onClick={handleRunFullAnalysis}
+                  className="w-full py-4 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold rounded-xl text-sm transition-colors active:scale-[0.98] shadow-lg shadow-amber-500/20"
+                >
+                  Run Full Analysis (60s)
+                </button>
+              )}
+              {/* Claude bridge fallback */}
               <FullAnalysisBridge deal={deal} toast={actions.toast} />
             </>
           ) : null}
@@ -541,13 +729,45 @@ export function PipelineDetail({
           />
         </div>
 
+        {/* Offer speed bump warning */}
+        {showOfferWarning && (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 space-y-3">
+            <p className="text-sm font-semibold text-amber-400">No Full Analysis Has Been Run</p>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              You're about to make an offer based on the Quick Screen only. Quick Screen is a rough filter \u2014 not investment-grade analysis.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setShowOfferWarning(false); handleRunFullAnalysis(); }}
+                className="flex-1 py-2.5 rounded-xl bg-amber-500/20 text-amber-400 font-semibold text-xs border border-amber-500/30"
+              >
+                Run Full Analysis First
+              </button>
+              <button
+                onClick={() => { setShowOfferWarning(false); setShowOfferForm(true); }}
+                className="flex-1 py-2.5 rounded-xl bg-zinc-800 text-zinc-400 font-semibold text-xs border border-zinc-700"
+              >
+                Proceed Anyway
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Action buttons */}
         {deal.status !== "won" && deal.status !== "passed" && deal.status !== "dead" && (
           <div className="space-y-2 pt-2">
-            {!showOfferForm && !showPassForm && (
+            {!showOfferForm && !showPassForm && !showOfferWarning && (
               <div className="grid grid-cols-2 gap-2">
                 <button
-                  onClick={() => setShowOfferForm(true)}
+                  onClick={() => {
+                    // Speed bump: warn if no full analysis exists
+                    const hasFullAnalysis = hasFullV2 && (v3Result?.status === "complete" || analysisResult?._version >= 3);
+                    if (!hasFullAnalysis) {
+                      setShowOfferWarning(true);
+                    } else {
+                      setShowOfferForm(true);
+                    }
+                  }}
                   className="py-3 rounded-xl bg-purple-600 text-white font-semibold text-sm"
                 >
                   Make Offer
