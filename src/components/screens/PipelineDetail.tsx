@@ -142,8 +142,10 @@ export function PipelineDetail({
         setAnalysisResult(parsed);
 
         // If V2 analysis, hydrate calculator
-        if ((a as any).analysis_version >= 2 && parsed.rehab_assessment) {
-          hydrateV2(parsed as AnalysisResultV2, (a as any).calculator_inputs);
+        // V2 fields are embedded inside analysis_result as _version and _calculator_inputs
+        const isV2 = parsed._version >= 2 || ((a as any).analysis_version >= 2);
+        if (isV2 && parsed.rehab_assessment) {
+          hydrateV2(parsed as AnalysisResultV2, parsed._calculator_inputs || (a as any).calculator_inputs);
         }
       }
     } catch (err) {
@@ -294,14 +296,18 @@ export function PipelineDetail({
 
       setProgress("Saving analysis...");
 
-      // 6. Save to database
+      // 6. Save to database — embed V2 fields inside analysis_result JSONB
+      //    (no SQL migration needed — _calculator_inputs and _version live inside the existing column)
       const riskCount = (aiResult.risk_tests || []).filter(r => r.rating === "HIGH" || r.rating === "CRITICAL").length;
+      const analysisResultWithMeta = {
+        ...aiResult,
+        _calculator_inputs: inputs,
+        _version: 2,
+      };
       await data.createAnalysis({
         pipeline_deal_id: dealId,
         input_data: { address: deal.address, asking_price: deal.asking_price },
-        analysis_result: aiResult as any,
-        calculator_inputs: inputs as any,
-        analysis_version: 2,
+        analysis_result: analysisResultWithMeta as any,
         verdict: aiResult.verdict.decision,
         base_case_profit: m.baseCase.grossProfit,
         base_case_roi: m.baseCase.roi / 100,
