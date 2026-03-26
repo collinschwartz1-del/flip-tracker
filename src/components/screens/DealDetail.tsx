@@ -136,6 +136,13 @@ export function DealDetail({
           <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
             <div className={`h-full rounded-full ${budgetBarColor(fin.budgetUsed)}`} style={{ width: `${Math.min(100, fin.budgetUsed * 100)}%` }} />
           </div>
+          {deal.rehab_budget > 0 && (
+            fin.rehabSpent > deal.rehab_budget ? (
+              <p className="text-[10px] text-red-400 font-medium">Over budget by {fmt(fin.rehabSpent - deal.rehab_budget)}</p>
+            ) : fin.rehabSpent === deal.rehab_budget ? (
+              <p className="text-[10px] text-amber-400 font-medium">On budget</p>
+            ) : null
+          )}
           <Row label="Holding Costs" value={fmt(fin.holdingSpent)} />
           <Row label="Selling Costs (8%)" value={fmt(fin.sellingCosts)} />
           <div className="border-t border-zinc-800 my-2" />

@@ -127,20 +127,20 @@ export function calcDealFinancials(
 // ============================================================
 
 export function budgetColor(ratio: number): string {
-  if (ratio >= 1) return "text-red-400";
-  if (ratio >= 0.8) return "text-amber-400";
-  return "text-emerald-400";
+  if (ratio > 1) return "text-red-400";       // OVER budget (more than 100%)
+  if (ratio >= 0.9) return "text-amber-400";   // Approaching (90-100%)
+  return "text-emerald-400";                    // On track (under 90%)
 }
 
 export function budgetBg(ratio: number): string {
-  if (ratio >= 1) return "border-red-500/40 bg-red-500/5";
-  if (ratio >= 0.8) return "border-amber-500/40 bg-amber-500/5";
+  if (ratio > 1) return "border-red-500/40 bg-red-500/5";
+  if (ratio >= 0.9) return "border-amber-500/40 bg-amber-500/5";
   return "border-emerald-500/20 bg-emerald-500/5";
 }
 
 export function budgetBarColor(ratio: number): string {
-  if (ratio >= 1) return "bg-red-500";
-  if (ratio >= 0.8) return "bg-amber-500";
+  if (ratio > 1) return "bg-red-500";
+  if (ratio >= 0.9) return "bg-amber-500";
   return "bg-emerald-500";
 }
 

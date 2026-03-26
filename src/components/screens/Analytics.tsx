@@ -424,9 +424,9 @@ export function Analytics({
           <div className="space-y-2">
             {activeMetrics.map((deal) => {
               const healthStatus =
-                deal.budgetUsed >= 1
+                deal.budgetUsed > 1
                   ? { label: "Over Budget", color: "text-red-400" }
-                  : deal.budgetUsed >= 0.8
+                  : deal.budgetUsed >= 0.9
                   ? { label: "Watch", color: "text-amber-400" }
                   : { label: "On Track", color: "text-emerald-400" };
               return (
