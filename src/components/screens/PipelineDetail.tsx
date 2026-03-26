@@ -200,43 +200,61 @@ export function PipelineDetail({
         body: JSON.stringify({ prompt, listing_url: listingUrl.trim() || deal.listing_url || undefined }),
       });
 
-      if (!response.ok) throw new Error(`Analysis failed: ${response.status}`);
-
       const respData = await response.json();
+
+      if (!response.ok) {
+        throw new Error(respData.error || `Analysis failed: ${response.status}`);
+      }
+
       const text = typeof respData.content === "string"
         ? respData.content
         : respData.content?.[0]?.text || "";
+
+      if (!text) throw new Error("AI returned empty response. Try again.");
+
       const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
 
       setProgress("Parsing results...");
 
-      // 3. Parse AI response
+      // 3. Parse AI response — robust extraction between first { and last }
       let aiResult: AnalysisResultV2;
       try {
-        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-        aiResult = JSON.parse(jsonMatch ? jsonMatch[0] : cleaned);
-      } catch {
-        throw new Error("Failed to parse analysis result");
+        const jsonStart = cleaned.indexOf("{");
+        const jsonEnd = cleaned.lastIndexOf("}");
+        if (jsonStart === -1 || jsonEnd === -1) throw new Error("No JSON object found");
+        const jsonStr = cleaned.slice(jsonStart, jsonEnd + 1);
+        aiResult = JSON.parse(jsonStr);
+      } catch (parseErr: any) {
+        console.error("Parse error:", parseErr.message, "Raw text:", text.slice(0, 500));
+        throw new Error("Failed to parse analysis result — AI may have returned malformed JSON");
       }
 
-      // 4. Build calculator inputs from AI data
-      const inputs = buildDefaultInputs(deal.asking_price, {
-        rehabLight: aiResult.rehab_assessment.light.cost,
-        rehabModerate: aiResult.rehab_assessment.moderate.cost,
-        rehabHeavy: aiResult.rehab_assessment.heavy.cost,
-        rehabLightWeeks: aiResult.rehab_assessment.light.timeline_weeks,
-        rehabModerateWeeks: aiResult.rehab_assessment.moderate.timeline_weeks,
-        rehabHeavyWeeks: aiResult.rehab_assessment.heavy.timeline_weeks,
-        rehabLightScope: aiResult.rehab_assessment.light.scope,
-        rehabModerateScope: aiResult.rehab_assessment.moderate.scope,
-        rehabHeavyScope: aiResult.rehab_assessment.heavy.scope,
-        arvBest: aiResult.arv_validation.independent_arv_high,
-        arvBase: aiResult.arv_validation.independent_arv_base,
-        arvWorst: aiResult.arv_validation.independent_arv_low,
-        monthlyTaxes: aiResult.holding_costs.monthly_taxes,
-        monthlyInsurance: aiResult.holding_costs.monthly_insurance,
-        monthlyUtilities: aiResult.holding_costs.monthly_utilities,
-        monthlyLawnSnow: aiResult.holding_costs.monthly_lawn_snow,
+      // Validate required V2 fields exist
+      if (!aiResult.rehab_assessment || !aiResult.arv_validation || !aiResult.verdict) {
+        throw new Error("AI response missing required fields. Try re-running the analysis.");
+      }
+
+      // 4. Build calculator inputs from AI data (null-safe)
+      const ra = aiResult.rehab_assessment || {} as any;
+      const av = aiResult.arv_validation || {} as any;
+      const hc = aiResult.holding_costs || {} as any;
+      const inputs = buildDefaultInputs(deal.asking_price || 0, {
+        rehabLight: ra.light?.cost,
+        rehabModerate: ra.moderate?.cost,
+        rehabHeavy: ra.heavy?.cost,
+        rehabLightWeeks: ra.light?.timeline_weeks,
+        rehabModerateWeeks: ra.moderate?.timeline_weeks,
+        rehabHeavyWeeks: ra.heavy?.timeline_weeks,
+        rehabLightScope: ra.light?.scope,
+        rehabModerateScope: ra.moderate?.scope,
+        rehabHeavyScope: ra.heavy?.scope,
+        arvBest: av.independent_arv_high,
+        arvBase: av.independent_arv_base,
+        arvWorst: av.independent_arv_low,
+        monthlyTaxes: hc.monthly_taxes,
+        monthlyInsurance: hc.monthly_insurance,
+        monthlyUtilities: hc.monthly_utilities,
+        monthlyLawnSnow: hc.monthly_lawn_snow,
       });
 
       // 5. Run all financial calculations client-side
@@ -248,7 +266,7 @@ export function PipelineDetail({
       setProgress("Saving analysis...");
 
       // 6. Save to database
-      const riskCount = aiResult.risk_tests.filter(r => r.rating === "HIGH" || r.rating === "CRITICAL").length;
+      const riskCount = (aiResult.risk_tests || []).filter(r => r.rating === "HIGH" || r.rating === "CRITICAL").length;
       await data.createAnalysis({
         pipeline_deal_id: dealId,
         input_data: { address: deal.address, asking_price: deal.asking_price },
