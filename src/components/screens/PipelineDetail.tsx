@@ -175,7 +175,9 @@ export function PipelineDetail({
       }
 
       const apiData = await response.json();
-      const text = apiData.content?.[0]?.text || "";
+      const text = typeof apiData.content === "string"
+        ? apiData.content
+        : apiData.content?.[0]?.text || "";
 
       // Parse JSON from response
       let parsed;

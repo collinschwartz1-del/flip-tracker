@@ -5,24 +5,22 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { prompt, listing_url } = body;
 
-    let listingContext = "";
+    let fullPrompt = prompt;
 
-    // If a Zillow/Redfin URL is provided, fetch and extract it
+    // If a Zillow/Redfin URL is provided, fetch and inject the content
     if (listing_url) {
       try {
         const pageRes = await fetch(listing_url, {
           headers: {
             "User-Agent":
               "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml",
+            Accept: "text/html,application/xhtml+xml",
             "Accept-Language": "en-US,en;q=0.9",
           },
         });
 
         if (pageRes.ok) {
           const html = await pageRes.text();
-
-          // Clean the HTML — strip scripts, styles, nav, ads
           const cleaned = html
             .replace(/<script[\s\S]*?<\/script>/gi, "")
             .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -30,24 +28,29 @@ export async function POST(request: NextRequest) {
             .replace(/<footer[\s\S]*?<\/footer>/gi, "")
             .replace(/<header[\s\S]*?<\/header>/gi, "")
             .replace(/<!--[\s\S]*?-->/g, "")
-            .replace(/<[^>]+>/g, " ") // Strip all remaining HTML tags
-            .replace(/\s+/g, " ")     // Collapse whitespace
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
             .trim()
-            .slice(0, 12000);         // Cap token usage
+            .slice(0, 12000);
 
-          listingContext = `\n\n--- PROPERTY LISTING DATA (from ${listing_url}) ---\n${cleaned}\n--- END LISTING DATA ---\n\nIMPORTANT: Use this listing data to:\n1. Validate or adjust the ARV using the Zestimate/Redfin Estimate and tax assessed value\n2. Check prior sale history (what the seller paid)\n3. Use exact property tax amount for holding cost calculations\n4. Note any property features (basement, garage, HVAC, roof) for rehab scope\n5. Flag any discrepancies between the listing data and the wholesaler's claims\n6. If the property has been listed on MLS before, note how long and at what price`;
+          // Inject listing data into prompt where the placeholder is
+          if (fullPrompt.includes("PROPERTY LISTING DATA (from Zillow/Redfin")) {
+            fullPrompt = fullPrompt.replace(
+              "PROPERTY LISTING DATA (from Zillow/Redfin — treat as WEB_SEARCH):",
+              `PROPERTY LISTING DATA (from Zillow/Redfin — treat as WEB_SEARCH):\n${cleaned}`
+            );
+          } else {
+            fullPrompt += `\n\nPROPERTY LISTING DATA (from ${listing_url}):\n${cleaned}`;
+          }
         }
       } catch (fetchErr) {
-        // Don't fail the whole analysis if the listing fetch fails
         console.warn("Could not fetch listing URL:", fetchErr);
-        listingContext =
-          "\n\n[NOTE: A Zillow/Redfin URL was provided but could not be fetched. Proceed with available data.]\n";
+        fullPrompt +=
+          "\n\n[NOTE: A Zillow/Redfin URL was provided but could not be fetched. Proceed with available data.]";
       }
     }
 
-    // Append listing context to the existing prompt
-    const fullPrompt = prompt + listingContext;
-
+    // Call Anthropic API with web search enabled
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -57,13 +60,20 @@ export async function POST(request: NextRequest) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
-        max_tokens: 4000,
+        max_tokens: 6000,
+        tools: [
+          {
+            type: "web_search_20250305",
+            name: "web_search",
+          },
+        ],
         messages: [{ role: "user", content: fullPrompt }],
       }),
     });
 
     if (!response.ok) {
       const error = await response.text();
+      console.error("Anthropic API error:", error);
       return NextResponse.json(
         { error: `Anthropic API error: ${response.status}` },
         { status: response.status }
@@ -71,8 +81,18 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await response.json();
-    return NextResponse.json(data);
+
+    // Extract text content from response
+    // When web search is used, response may contain tool_use + tool_result + text blocks
+    // We only need the final text block(s) which contain the JSON
+    const textContent = data.content
+      ?.filter((c: any) => c.type === "text")
+      ?.map((c: any) => c.text || "")
+      ?.join("") || "";
+
+    return NextResponse.json({ content: textContent });
   } catch (error: any) {
+    console.error("Analysis API error:", error);
     return NextResponse.json(
       { error: error.message },
       { status: 500 }
