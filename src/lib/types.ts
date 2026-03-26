@@ -195,6 +195,173 @@ export interface MLSComp {
 }
 
 // ============================================================
+// DATA CONFIDENCE SYSTEM (Phase 3.0)
+// ============================================================
+
+export type ConfidenceLevel =
+  | "MLS_VERIFIED"
+  | "TAX_RECORDS"
+  | "CONTRACTOR_BID"
+  | "PHOTO_VERIFIED"
+  | "WEB_SEARCH"
+  | "USER_PROVIDED"
+  | "ESTIMATED"
+  | "ASSUMED";
+
+// ============================================================
+// ANALYSIS RESULT V2 (Phase 3.0)
+// ============================================================
+
+export interface AnalysisResultV2 {
+  data_tier: {
+    tier: string;
+    confidence: string;
+    present: string[];
+    missing: Array<{
+      item: string;
+      severity: string;
+      how_to_fix: string;
+    }>;
+  };
+
+  property_profile: {
+    address: string;
+    beds: number | null;
+    baths: number | null;
+    sqft: number | null;
+    year_built: number | null;
+    lot_size: string;
+    property_type: string;
+    condition_notes: string;
+    key_features: string[];
+    red_flags: string[];
+  };
+
+  market_snapshot: {
+    median_price: number;
+    price_per_sf: number;
+    avg_dom: number;
+    yoy_change_pct: number;
+    avg_home_value: number;
+    inventory_trend: string;
+    market_type: string;
+    active_competition: number;
+    source: ConfidenceLevel;
+    notes: string;
+  };
+
+  comps: {
+    source: ConfidenceLevel;
+    entries: Array<{
+      address: string;
+      sale_price: number | null;
+      sqft: number | null;
+      price_per_sf: number | null;
+      beds: number | null;
+      baths: number | null;
+      year_built: number | null;
+      condition: string;
+      sale_date: string;
+      dom: number | null;
+      status: string;
+      distance: string;
+      source: ConfidenceLevel;
+      relevance_note: string;
+    }>;
+  };
+
+  arv_validation: {
+    independent_arv_low: number;
+    independent_arv_base: number;
+    independent_arv_high: number;
+    median_renovated_psf: number;
+    methodology: string;
+    seller_arv: number | null;
+    seller_arv_assessment: string;
+    constraints: string[];
+    source: ConfidenceLevel;
+  };
+
+  rehab_assessment: {
+    photos_available: boolean;
+    contractor_bid_available: boolean;
+    confidence: string;
+    confidence_note: string;
+    light: {
+      cost: number;
+      contingency_pct: number;
+      timeline_weeks: number;
+      scope: string;
+    };
+    moderate: {
+      cost: number;
+      contingency_pct: number;
+      timeline_weeks: number;
+      scope: string;
+    };
+    heavy: {
+      cost: number;
+      contingency_pct: number;
+      timeline_weeks: number;
+      scope: string;
+    };
+  };
+
+  holding_costs: {
+    monthly_taxes: number;
+    monthly_insurance: number;
+    monthly_utilities: number;
+    monthly_lawn_snow: number;
+    source: ConfidenceLevel;
+    notes: string;
+  };
+
+  risk_tests: Array<{
+    name: string;
+    rating: string;
+    detail: string;
+    cost_impact: string;
+    data_gap: boolean;
+  }>;
+
+  verdict: {
+    decision: string;
+    conditions: string[];
+    summary: string;
+    data_upgrade_opportunities: Array<{
+      action: string;
+      impact: string;
+    }>;
+  };
+
+  field_confidence: Record<string, ConfidenceLevel>;
+}
+
+// ============================================================
+// UPDATED AI ANALYSIS RECORD (Phase 3.0)
+// ============================================================
+
+export interface AIAnalysisV2 {
+  id: string;
+  created_at: string;
+  pipeline_deal_id: string;
+  input_data: Record<string, any>;
+  analysis_result: AnalysisResultV2;
+  calculator_inputs: Record<string, any>;
+  analysis_version: number;
+  verdict: string;
+  base_case_profit: number | null;
+  base_case_roi: number | null;
+  max_purchase_price: number | null;
+  arv_validated: number | null;
+  rehab_moderate: number | null;
+  risk_level: string;
+  status: string;
+  error_message: string | null;
+  triggered_by: string;
+}
+
+// ============================================================
 // PIPELINE TYPES (Phase 2)
 // ============================================================
 

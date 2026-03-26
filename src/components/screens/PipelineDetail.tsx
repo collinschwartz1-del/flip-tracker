@@ -1,11 +1,19 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import type { PipelineDeal, AIAnalysis, MLSComp } from "@/lib/types";
+import type { PipelineDeal, AIAnalysis, MLSComp, AnalysisResultV2 } from "@/lib/types";
 import { PIPELINE_STATUS_CONFIG } from "@/lib/types";
 import type { AppActions, ScreenParams } from "@/components/AppShell";
 import { Spinner } from "@/components/ui";
 import { CMAUpload } from "@/components/CMAUpload";
+import { AnalysisViewer } from "@/components/AnalysisViewer";
+import { buildAnalysisPromptV2 } from "@/lib/analysis-prompt";
+import {
+  buildDefaultInputs, calcFullMatrix, calcKillZones,
+  calcCashComparison, calcOpportunityCost,
+  type MatrixResult, type KillZones as KillZonesType, type CellResult,
+  type OpportunityCost as OpportunityCostType, type FlipCalculatorInputs,
+} from "@/lib/flip-calculator";
 import * as data from "@/lib/data";
 
 function buildAnalysisPrompt(deal: PipelineDeal): string {
@@ -79,6 +87,48 @@ export function PipelineDetail({
   const [showPassForm, setShowPassForm] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [notes, setNotes] = useState<any[]>([]);
+  const [progress, setProgress] = useState("");
+
+  // V2 analysis state
+  const [aiData, setAiData] = useState<AnalysisResultV2 | null>(null);
+  const [matrix, setMatrix] = useState<MatrixResult | null>(null);
+  const [killZonesData, setKillZonesData] = useState<KillZonesType | null>(null);
+  const [financingData, setFinancingData] = useState<{ hardMoney: CellResult; allCash: CellResult } | null>(null);
+  const [oppCost, setOppCost] = useState<OpportunityCostType | null>(null);
+  const [calcInputs, setCalcInputs] = useState<FlipCalculatorInputs | null>(null);
+
+  const hydrateV2 = useCallback((aiResult: AnalysisResultV2, savedInputs?: Record<string, any>) => {
+    setAiData(aiResult);
+    const inputs = savedInputs && (savedInputs as any).purchasePrice
+      ? savedInputs as FlipCalculatorInputs
+      : buildDefaultInputs(deal?.asking_price || 0, {
+          rehabLight: aiResult.rehab_assessment.light.cost,
+          rehabModerate: aiResult.rehab_assessment.moderate.cost,
+          rehabHeavy: aiResult.rehab_assessment.heavy.cost,
+          rehabLightWeeks: aiResult.rehab_assessment.light.timeline_weeks,
+          rehabModerateWeeks: aiResult.rehab_assessment.moderate.timeline_weeks,
+          rehabHeavyWeeks: aiResult.rehab_assessment.heavy.timeline_weeks,
+          rehabLightScope: aiResult.rehab_assessment.light.scope,
+          rehabModerateScope: aiResult.rehab_assessment.moderate.scope,
+          rehabHeavyScope: aiResult.rehab_assessment.heavy.scope,
+          arvBest: aiResult.arv_validation.independent_arv_high,
+          arvBase: aiResult.arv_validation.independent_arv_base,
+          arvWorst: aiResult.arv_validation.independent_arv_low,
+          monthlyTaxes: aiResult.holding_costs.monthly_taxes,
+          monthlyInsurance: aiResult.holding_costs.monthly_insurance,
+          monthlyUtilities: aiResult.holding_costs.monthly_utilities,
+          monthlyLawnSnow: aiResult.holding_costs.monthly_lawn_snow,
+        });
+    const m = calcFullMatrix(inputs);
+    const kz = calcKillZones(inputs, m.baseCase);
+    const fin = calcCashComparison(inputs);
+    const oc = calcOpportunityCost(m.baseCase.cashInvested, m.baseCase.totalMonths, m.baseCase.grossProfit);
+    setCalcInputs(inputs);
+    setMatrix(m);
+    setKillZonesData(kz);
+    setFinancingData(fin);
+    setOppCost(oc);
+  }, [deal?.asking_price]);
 
   const loadAnalysis = useCallback(async () => {
     if (!dealId) return;
@@ -86,18 +136,22 @@ export function PipelineDetail({
       const a = await data.getLatestAnalysis(dealId);
       setAnalysis(a);
       if (a?.analysis_result) {
-        setAnalysisResult(
-          typeof a.analysis_result === "string"
-            ? JSON.parse(a.analysis_result)
-            : a.analysis_result
-        );
+        const parsed = typeof a.analysis_result === "string"
+          ? JSON.parse(a.analysis_result)
+          : a.analysis_result;
+        setAnalysisResult(parsed);
+
+        // If V2 analysis, hydrate calculator
+        if ((a as any).analysis_version >= 2 && parsed.rehab_assessment) {
+          hydrateV2(parsed as AnalysisResultV2, (a as any).calculator_inputs);
+        }
       }
     } catch (err) {
       console.error("Failed to load analysis:", err);
     } finally {
       setLoadingAnalysis(false);
     }
-  }, [dealId]);
+  }, [dealId, hydrateV2]);
 
   const loadNotes = useCallback(async () => {
     if (!dealId) return;
@@ -126,94 +180,104 @@ export function PipelineDetail({
 
   const runAnalysis = async () => {
     setAnalyzing(true);
+    setProgress("Building analysis prompt...");
     try {
       // Save listing URL if provided
       if (listingUrl.trim()) {
         await data.updatePipelineDeal(dealId, { listing_url: listingUrl.trim() });
       }
-      // Update status to analyzing
       await data.updatePipelineDeal(dealId, { status: "analyzing" });
 
-      let prompt = buildAnalysisPrompt(deal);
+      // 1. Build V2 prompt with all available data
+      const prompt = buildAnalysisPromptV2(deal, deal.cma_comps);
 
-      // Append MLS comp context if CMA data is available
-      if (deal.cma_comps && deal.cma_comps.length > 0) {
-        const soldComps = deal.cma_comps.filter(
-          (c) => c.status?.toLowerCase() === "sold" || c.sale_price
-        );
-        const activeComps = deal.cma_comps.filter(
-          (c) => c.status?.toLowerCase() === "active"
-        );
+      setProgress("Running adversarial analysis (web search enabled)...");
 
-        prompt += `\n\nMLS COMP DATA (${deal.cma_comps.length} comps from CMA report):\n`;
-
-        if (soldComps.length > 0) {
-          prompt += `\nSOLD COMPS:\n`;
-          soldComps.forEach((c, i) => {
-            prompt += `${i + 1}. ${c.address} — Sold: $${c.sale_price?.toLocaleString() || "?"} | ${c.sqft?.toLocaleString() || "?"}sf ($${c.price_per_sf?.toFixed(0) || "?"}/sf) | ${c.beds || "?"}bd/${c.baths || "?"}ba | Built ${c.year_built || "?"} | ${c.dom || "?"} DOM | ${c.condition || "No condition noted"}\n`;
-          });
-        }
-
-        if (activeComps.length > 0) {
-          prompt += `\nACTIVE LISTINGS (competition):\n`;
-          activeComps.forEach((c, i) => {
-            prompt += `${i + 1}. ${c.address} — List: $${c.list_price?.toLocaleString() || "?"} | ${c.sqft?.toLocaleString() || "?"}sf | ${c.beds || "?"}bd/${c.baths || "?"}ba | ${c.dom || "?"} DOM\n`;
-          });
-        }
-
-        prompt += `\nUse this MLS comp data to validate your ARV estimate. Weight recent sold comps by similarity (sqft, beds/baths, condition, proximity). Flag if your ARV diverges significantly from comp data.`;
-      }
-
+      // 2. Send to API
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, listing_url: listingUrl.trim() || undefined }),
+        body: JSON.stringify({ prompt, listing_url: listingUrl.trim() || deal.listing_url || undefined }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Analysis failed: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Analysis failed: ${response.status}`);
 
-      const apiData = await response.json();
-      const text = typeof apiData.content === "string"
-        ? apiData.content
-        : apiData.content?.[0]?.text || "";
+      const respData = await response.json();
+      const text = typeof respData.content === "string"
+        ? respData.content
+        : respData.content?.[0]?.text || "";
+      const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
 
-      // Parse JSON from response
-      let parsed;
+      setProgress("Parsing results...");
+
+      // 3. Parse AI response
+      let aiResult: AnalysisResultV2;
       try {
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        parsed = JSON.parse(jsonMatch ? jsonMatch[0] : text);
+        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+        aiResult = JSON.parse(jsonMatch ? jsonMatch[0] : cleaned);
       } catch {
         throw new Error("Failed to parse analysis result");
       }
 
-      // Save analysis to DB
+      // 4. Build calculator inputs from AI data
+      const inputs = buildDefaultInputs(deal.asking_price, {
+        rehabLight: aiResult.rehab_assessment.light.cost,
+        rehabModerate: aiResult.rehab_assessment.moderate.cost,
+        rehabHeavy: aiResult.rehab_assessment.heavy.cost,
+        rehabLightWeeks: aiResult.rehab_assessment.light.timeline_weeks,
+        rehabModerateWeeks: aiResult.rehab_assessment.moderate.timeline_weeks,
+        rehabHeavyWeeks: aiResult.rehab_assessment.heavy.timeline_weeks,
+        rehabLightScope: aiResult.rehab_assessment.light.scope,
+        rehabModerateScope: aiResult.rehab_assessment.moderate.scope,
+        rehabHeavyScope: aiResult.rehab_assessment.heavy.scope,
+        arvBest: aiResult.arv_validation.independent_arv_high,
+        arvBase: aiResult.arv_validation.independent_arv_base,
+        arvWorst: aiResult.arv_validation.independent_arv_low,
+        monthlyTaxes: aiResult.holding_costs.monthly_taxes,
+        monthlyInsurance: aiResult.holding_costs.monthly_insurance,
+        monthlyUtilities: aiResult.holding_costs.monthly_utilities,
+        monthlyLawnSnow: aiResult.holding_costs.monthly_lawn_snow,
+      });
+
+      // 5. Run all financial calculations client-side
+      const m = calcFullMatrix(inputs);
+      const kz = calcKillZones(inputs, m.baseCase);
+      const fin = calcCashComparison(inputs);
+      const oc = calcOpportunityCost(m.baseCase.cashInvested, m.baseCase.totalMonths, m.baseCase.grossProfit);
+
+      setProgress("Saving analysis...");
+
+      // 6. Save to database
+      const riskCount = aiResult.risk_tests.filter(r => r.rating === "HIGH" || r.rating === "CRITICAL").length;
       await data.createAnalysis({
         pipeline_deal_id: dealId,
         input_data: { address: deal.address, asking_price: deal.asking_price },
-        analysis_result: parsed,
-        verdict: parsed.verdict || "",
-        base_case_profit: parsed.base_case_profit || null,
-        base_case_roi: parsed.base_case_roi || null,
-        max_purchase_price: parsed.max_purchase_price || null,
-        arv_validated: parsed.estimated_arv || null,
-        rehab_moderate: parsed.rehab_estimate?.moderate || null,
-        risk_level: parsed.risk_level || "",
+        analysis_result: aiResult as any,
+        calculator_inputs: inputs as any,
+        analysis_version: 2,
+        verdict: aiResult.verdict.decision,
+        base_case_profit: m.baseCase.grossProfit,
+        base_case_roi: m.baseCase.roi / 100,
+        max_purchase_price: kz.maxPurchaseFor30kProfit,
+        arv_validated: aiResult.arv_validation.independent_arv_base,
+        rehab_moderate: aiResult.rehab_assessment.moderate.cost,
+        risk_level: riskCount >= 3 ? "HIGH" : riskCount >= 1 ? "MEDIUM" : "LOW",
         status: "completed",
         error_message: null,
         triggered_by: userEmail,
-      });
+      } as any);
 
-      // Update deal with estimates
+      // Update deal with AI estimates
       await data.updatePipelineDeal(dealId, {
         status: "new",
-        estimated_arv: parsed.estimated_arv || null,
-        estimated_rehab: parsed.rehab_estimate?.moderate || null,
-        estimated_profit: parsed.base_case_profit || null,
+        estimated_arv: aiResult.arv_validation.independent_arv_base,
+        estimated_rehab: aiResult.rehab_assessment.moderate.cost,
+        estimated_profit: m.baseCase.grossProfit,
       });
 
-      setAnalysisResult(parsed);
+      // 7. Store in local state
+      setAnalysisResult(aiResult as any);
+      hydrateV2(aiResult, inputs as any);
       await actions.refreshData();
       await loadAnalysis();
       actions.toast("Analysis complete");
@@ -222,6 +286,7 @@ export function PipelineDetail({
       await data.updatePipelineDeal(dealId, { status: "new" });
     } finally {
       setAnalyzing(false);
+      setProgress("");
     }
   };
 
@@ -413,18 +478,28 @@ export function PipelineDetail({
           className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-zinc-950 font-semibold text-sm disabled:opacity-50"
         >
           {analyzing
-            ? "Analyzing..."
+            ? (progress || "Analyzing...")
             : analysisResult
-            ? "Re-run AI Analysis"
+            ? "Re-run AI Analysis (V2)"
             : "Run AI Analysis"}
         </button>
 
         {/* Analysis Results */}
         {loadingAnalysis ? (
           <Spinner />
+        ) : aiData && matrix && killZonesData && financingData && oppCost && calcInputs ? (
+          <AnalysisViewer
+            aiData={aiData}
+            matrix={matrix}
+            killZones={killZonesData}
+            financing={financingData}
+            oppCost={oppCost}
+            calcInputs={calcInputs}
+            deal={deal}
+          />
         ) : analysisResult ? (
           <div className="space-y-4">
-            {/* Verdict */}
+            {/* V1 Fallback - Verdict */}
             <div
               className={`p-4 rounded-xl border ${
                 verdictColors[analysisResult.verdict] || verdictColors["MAYBE"]
