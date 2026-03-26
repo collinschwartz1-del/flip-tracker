@@ -199,17 +199,7 @@ export function QuickScreenCard({
         </p>
       </div>
 
-      {/* Full Analysis CTA */}
-      <button
-        onClick={onRunFull}
-        className="w-full py-4 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold rounded-xl text-sm transition-colors active:scale-[0.98] shadow-lg shadow-amber-500/20"
-      >
-        Run Full Analysis in Claude →
-      </button>
-      <p className="text-[10px] text-zinc-600 text-center">
-        Opens Claude with all deal data pre-filled. Full adversarial 8-phase analysis with real
-        comps, verified ARV, itemized rehab, 9-cell matrix, and investment verdict.
-      </p>
+      {/* Full Analysis CTA is handled by FullAnalysisBridge component rendered below */}
     </div>
   );
 }

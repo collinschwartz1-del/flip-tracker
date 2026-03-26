@@ -8,9 +8,9 @@ import { Spinner } from "@/components/ui";
 import { CMAUpload } from "@/components/CMAUpload";
 import { AnalysisViewer } from "@/components/AnalysisViewer";
 import { buildScreeningPrompt } from "@/lib/screening-prompt";
-import { launchFullAnalysis } from "@/lib/full-analysis-bridge";
 import { QuickScreenCard, type QuickScreenResult } from "@/components/QuickScreen";
 import { ImportAnalysis } from "@/components/ImportAnalysis";
+import { FullAnalysisBridge } from "@/components/FullAnalysisBridge";
 import {
   buildDefaultInputs, calcFullMatrix, calcKillZones,
   calcCashComparison, calcOpportunityCost,
@@ -214,10 +214,7 @@ export function PipelineDetail({
     setProgress("");
   };
 
-  // --- TIER 2: Full Analysis (opens Claude chat) ---
-  const handleFullAnalysis = () => {
-    launchFullAnalysis(deal, actions.toast);
-  };
+  // --- TIER 2: Full Analysis bridge is rendered as a component (FullAnalysisBridge) ---
 
   // --- Import Full Analysis from Claude ---
   const handleImportAnalysis = async (importedData: any) => {
@@ -523,12 +520,15 @@ export function PipelineDetail({
               deal={deal}
             />
           ) : hasQuickScreen ? (
-            /* Show Quick Screen results */
-            <QuickScreenCard
-              result={quickScreen!}
-              onRunFull={handleFullAnalysis}
-              onRerun={handleQuickScreen}
-            />
+            /* Show Quick Screen results + Full Analysis bridge below */
+            <>
+              <QuickScreenCard
+                result={quickScreen!}
+                onRunFull={() => {}} // Bridge component handles this below
+                onRerun={handleQuickScreen}
+              />
+              <FullAnalysisBridge deal={deal} toast={actions.toast} />
+            </>
           ) : null}
         </div>
 
