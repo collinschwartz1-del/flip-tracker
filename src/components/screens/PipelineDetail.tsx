@@ -193,22 +193,51 @@ export function PipelineDetail({
 
       setProgress("Running adversarial analysis (web search enabled)...");
 
-      // 2. Send to API
+      // 2. Send to API (streaming SSE response)
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, listing_url: listingUrl.trim() || deal.listing_url || undefined }),
       });
 
-      const respData = await response.json();
-
       if (!response.ok) {
-        throw new Error(respData.error || `Analysis failed: ${response.status}`);
+        let errMsg = `Analysis failed: ${response.status}`;
+        try { const errData = await response.json(); errMsg = errData.error || errMsg; } catch {}
+        throw new Error(errMsg);
       }
 
-      const text = typeof respData.content === "string"
-        ? respData.content
-        : respData.content?.[0]?.text || "";
+      // Read SSE stream from edge function
+      setProgress("AI is analyzing (web search + reasoning)...");
+      let text = "";
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (reader) {
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const event = JSON.parse(line.slice(6));
+              if (event.type === "done") text = event.content || "";
+              if (event.type === "error") throw new Error(event.error || "Streaming error");
+            } catch (e: any) {
+              if (e.message && !e.message.includes("JSON")) throw e;
+            }
+          }
+        }
+      } else {
+        // Fallback for non-streaming response
+        const respData = await response.json();
+        text = typeof respData.content === "string"
+          ? respData.content
+          : respData.content?.[0]?.text || "";
+      }
 
       if (!text) throw new Error("AI returned empty response. Try again.");
 

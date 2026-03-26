@@ -1,26 +1,19 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
-// Increase Vercel function timeout (requires Pro plan for >10s)
-export const maxDuration = 60;
+// Edge Runtime: 30s limit on free tier (vs 10s for serverless)
+// Also supports streaming which keeps the connection alive
+export const runtime = "edge";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { prompt, listing_url } = body;
 
-    console.log("[analyze] Starting analysis, prompt length:", prompt?.length);
-    console.log("[analyze] API key exists:", !!process.env.ANTHROPIC_API_KEY);
-    console.log("[analyze] Listing URL:", listing_url || "none");
-
     let fullPrompt = prompt;
 
     // If a Zillow/Redfin URL is provided, fetch and inject the content
     if (listing_url) {
       try {
-        console.log("[analyze] Fetching listing URL...");
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout for URL fetch
-
         const pageRes = await fetch(listing_url, {
           headers: {
             "User-Agent":
@@ -28,15 +21,11 @@ export async function POST(request: NextRequest) {
             Accept: "text/html,application/xhtml+xml",
             "Accept-Language": "en-US,en;q=0.9",
           },
-          signal: controller.signal,
+          signal: AbortSignal.timeout(8000),
         });
-
-        clearTimeout(timeout);
-        console.log("[analyze] Listing fetch status:", pageRes.status);
 
         if (pageRes.ok) {
           const html = await pageRes.text();
-          console.log("[analyze] Listing content length:", html.length);
           const cleaned = html
             .replace(/<script[\s\S]*?<\/script>/gi, "")
             .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -49,24 +38,18 @@ export async function POST(request: NextRequest) {
             .trim()
             .slice(0, 12000);
 
-          // Always append listing data to the prompt
           fullPrompt += `\n\nPROPERTY LISTING DATA (from ${listing_url} — treat as WEB_SEARCH):\n${cleaned}\n\nUse this listing data to: validate/adjust ARV, check prior sale history, use exact tax amount for holding costs, note property features for rehab scope.`;
         } else {
-          console.warn("[analyze] Listing fetch failed with status:", pageRes.status);
           fullPrompt +=
             `\n\n[NOTE: Listing URL (${listing_url}) returned HTTP ${pageRes.status}. Proceed with available data and use web search to find property info.]`;
         }
       } catch (fetchErr: any) {
-        console.warn("[analyze] Could not fetch listing URL:", fetchErr.message);
         fullPrompt +=
           "\n\n[NOTE: A Zillow/Redfin URL was provided but could not be fetched. Proceed with available data and use web search to find property info.]";
       }
     }
 
-    console.log("[analyze] Final prompt length:", fullPrompt.length);
-    console.log("[analyze] Calling Anthropic API...");
-
-    // Call Anthropic API with web search enabled
+    // Call Anthropic API with streaming enabled
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -77,6 +60,7 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 6000,
+        stream: true,
         tools: [
           {
             type: "web_search_20250305",
@@ -87,46 +71,91 @@ export async function POST(request: NextRequest) {
       }),
     });
 
-    console.log("[analyze] Anthropic response status:", response.status);
-
     if (!response.ok) {
       const error = await response.text();
-      console.error("[analyze] Anthropic API error:", response.status, error);
-      return NextResponse.json(
-        { error: `Anthropic API error: ${response.status}` },
-        { status: response.status }
+      return new Response(
+        JSON.stringify({ error: `Anthropic API error: ${response.status}`, detail: error }),
+        { status: response.status, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    const data = await response.json();
+    // Stream the Anthropic SSE response, collecting text blocks and forwarding
+    // progress events to the client as newline-delimited JSON (NDJSON)
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
 
-    // Extract text content from response
-    // When web search is used, response may contain tool_use + tool_result + text blocks
-    // We only need the final text block(s) which contain the JSON
-    const allBlocks = data.content || [];
-    console.log("[analyze] Response block types:", allBlocks.map((c: any) => c.type).join(", "));
+    const stream = new ReadableStream({
+      async start(controller) {
+        const reader = response.body!.getReader();
+        let buffer = "";
+        let collectedText = "";
 
-    const textContent = allBlocks
-      .filter((c: any) => c.type === "text")
-      .map((c: any) => c.text || "")
-      .join("") || "";
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-    console.log("[analyze] Extracted text length:", textContent.length);
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
 
-    if (!textContent) {
-      console.error("[analyze] No text content in response. Stop reason:", data.stop_reason);
-      return NextResponse.json(
-        { error: "AI returned no text content. It may have only performed web searches without producing a final answer. Try again." },
-        { status: 502 }
-      );
-    }
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              const data = line.slice(6).trim();
+              if (data === "[DONE]") continue;
 
-    return NextResponse.json({ content: textContent });
+              try {
+                const event = JSON.parse(data);
+
+                // Collect text deltas
+                if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+                  collectedText += event.delta.text || "";
+                  // Send progress ping to keep connection alive
+                  controller.enqueue(encoder.encode(`data: {"type":"progress"}\n\n`));
+                }
+
+                // On message_stop, send the final collected text
+                if (event.type === "message_stop") {
+                  const payload = JSON.stringify({ type: "done", content: collectedText });
+                  controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
+                }
+
+                // Forward errors
+                if (event.type === "error") {
+                  const payload = JSON.stringify({ type: "error", error: event.error?.message || "Unknown streaming error" });
+                  controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
+                }
+              } catch {
+                // Skip malformed SSE lines
+              }
+            }
+          }
+
+          // If stream ended without message_stop, send what we have
+          if (collectedText) {
+            const payload = JSON.stringify({ type: "done", content: collectedText });
+            controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
+          }
+        } catch (err: any) {
+          const payload = JSON.stringify({ type: "error", error: err.message || "Stream read error" });
+          controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
   } catch (error: any) {
-    console.error("[analyze] Analysis API error:", error.message, error.stack);
-    return NextResponse.json(
-      { error: error.message || "Unknown analysis error" },
-      { status: 500 }
+    return new Response(
+      JSON.stringify({ error: error.message || "Unknown analysis error" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
 }
